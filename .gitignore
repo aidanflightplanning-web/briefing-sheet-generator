@@ -1,0 +1,19 @@
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# Operational data never goes into the repository: flight plans, filled-in
+# briefing sheets and MEL workbooks (crew names, fleet maintenance status).
+*.pdf
+*.xlsx
+*.xlsm
+*.xls
+# Tests that need that sample data stay on the dispatcher's PC.
+tests/test_local_examples.py
+
+.streamlit/secrets.toml
+
+# local preview tooling
+.claude/
