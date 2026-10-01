@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
-from .pdftext import extract_pages
+from .notams import START_RE as NOTAM_START_RE
+from .notams import Notam, parse_notams
+from .pdftext import StyledLine, extract_styled_pages
 
 MONTHS = {
     "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
@@ -36,9 +38,11 @@ FLTNO_RE = re.compile(
     r"^(?P<flight>(?P<airline>[A-Z]{2,3})(?P<number>\d{1,4})[A-Z]?)\s*/\s*(?P<date>\d{2}[A-Z]{3})\s+"
     r"(?P<orig>[A-Z]{3,4})\s*/\s*(?P<dest>[A-Z]{3,4})\s+"
     r"(?:(?P<altn>[A-Z]{3,4})\s+)?"
-    r"(?P<equip>[A-Z0-9]{2,4})\s*/\s*(?P<reg>[A-Z0-9-]{2,6})\b"
+    r"(?P<equip>[A-Z0-9]{2,6})\s*/\s*(?P<reg>[A-Z0-9-]{2,6})\b"   # "B737", and "ATR72" on ATR plans
 )
-TOTAL_FUEL_RE = re.compile(r"^TOTAL FUEL REQUIRED\s+(?:[A-Z]\s+)?(?:\d{1,2}\.\d{2}\s+)?(\d{3,6})\b")
+SCHEDULE_RE = re.compile(r"^SCHED DEP (\d{4})\s*/\s*(\d{4}) ARR\b")
+ALTERNATE_TIME_RE = re.compile(r"^ALTN\d TIME (\d{2})\.(\d{2})\b")
+TOTAL_FUEL_RE =re.compile(r"^TOTAL FUEL REQUIRED\s+(?:[A-Z]\s+)?(?:\d{1,2}\.\d{2}\s+)?(\d{3,6})\b")
 ETP_RE = re.compile(r"^([A-Z]{4}) TO ([A-Z]{4}) POSN\b")
 SUITABILITY_RE = re.compile(r"^([A-Z]{4}) \d{2}:\d{2}Z TO \d{2}:\d{2}Z$")
 PLAN_ID_RE = re.compile(r"^PLAN ID\s+(.+)$")
@@ -82,6 +86,25 @@ class Leg:
     etps: list[tuple[str, str]] = field(default_factory=list)
     suitable_airports: list[str] = field(default_factory=list)
     plan_id: str = ""
+    sched_dep: str = ""       # "1215" (UTC)
+    sched_arr: str = ""
+    alternate_minutes: list[int] = field(default_factory=list)   # flying time to each alternate
+
+    @property
+    def departure(self) -> datetime | None:
+        """Scheduled departure, UTC."""
+        if not (self.date_of_flight and self.sched_dep):
+            return None
+        return datetime.combine(self.date_of_flight, time(int(self.sched_dep[:2]) % 24, int(self.sched_dep[2:])))
+
+    @property
+    def arrival(self) -> datetime | None:
+        """Scheduled arrival, UTC: the day after departure when the clock time is earlier."""
+        departure = self.departure
+        if not (departure and self.sched_arr):
+            return departure
+        arrival = datetime.combine(self.date_of_flight, time(int(self.sched_arr[:2]) % 24, int(self.sched_arr[2:])))
+        return arrival + timedelta(days=1) if arrival < departure else arrival
 
     @property
     def sector(self) -> str:
@@ -103,6 +126,7 @@ class FlightPlan:
     dispatcher: str | None
     iata_to_icao: dict[str, str]
     warnings: list[str] = field(default_factory=list)
+    notams: dict[str, list[Notam]] = field(default_factory=dict)   # by airport (ICAO)
 
     @property
     def registrations(self) -> list[str]:
@@ -132,21 +156,26 @@ def _clean(line: str) -> str:
     return re.sub(r" {2,}", " ", line).strip()
 
 
-def _load_brief_pages(source: str | Path | bytes) -> list[list[str]]:
-    texts = extract_pages(source)
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _load_brief_pages(source: str | Path | bytes) -> list[list[StyledLine]]:
+    """The pages of the brief as cleaned lines (with font size and position), without page headers."""
+    styled = extract_styled_pages(source)
+    texts = ["\n".join(line.text for line in page) for page in styled]
     has_brief_header = any(BRIEF_PAGE_RE.search(t) for t in texts)
     pages = []
-    for text in texts:
+    for text, page in zip(texts, styled):
         if has_brief_header and not BRIEF_PAGE_RE.search(text):
             continue  # wind charts, previously attached briefing sheet, ...
         if not has_brief_header and BRIEFSHEET_PAGE_RE.search(text):
             continue
-        lines = []
-        for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-            line = _clean(raw)
-            if line and not HEADER_FOOTER_RE.match(line):
-                lines.append(line)
-        pages.append(lines)
+        lines = [StyledLine(_clean(line.text), line.size, line.x) for line in page]
+        pages.append([line for line in lines if line.text and not HEADER_FOOTER_RE.match(line.text)])
     return pages
 
 
@@ -154,8 +183,8 @@ def _is_weather_start(line: str) -> bool:
     return bool(WX_SECTION_START_RE.match(line) or TAF_START_RE.match(line) or METAR_START_RE.match(line))
 
 
-def _is_notam_page(lines: list[str]) -> bool:
-    return any("Briefing generated:" in line or line.startswith("NTM No:") for line in lines)
+def _is_notam_page(lines: list[StyledLine]) -> bool:
+    return any("Briefing generated:" in line.text or line.text.startswith("NTM No:") for line in lines)
 
 
 def _parse_fpl(chunk: list[str]) -> tuple[dict, int] | tuple[None, int]:
@@ -265,6 +294,10 @@ def _parse_legs(pre: list[str], warnings: list[str]) -> tuple[list[Leg], int]:
         for line in chunk[:leg_end]:
             if leg.total_fuel is None and (fm := TOTAL_FUEL_RE.match(line)):
                 leg.total_fuel = int(fm.group(1))
+            elif not leg.sched_dep and (tm := SCHEDULE_RE.match(line)):
+                leg.sched_dep, leg.sched_arr = tm.groups()
+            elif am := ALTERNATE_TIME_RE.match(line):
+                leg.alternate_minutes.append(int(am.group(1)) * 60 + int(am.group(2)))
             elif em := ETP_RE.match(line):
                 leg.etps.append((em.group(1), em.group(2)))
             elif sm := SUITABILITY_RE.match(line):
@@ -345,12 +378,13 @@ def parse_flight_plan(source: str | Path | bytes, name: str | None = None) -> Fl
     if any(flags):
         first = flags.index(True)
         last = len(flags) - 1 - flags[::-1].index(True)
-        pre = [line for page in pages[:first] for line in page]
-        notam = [line for page, f in zip(pages, flags) if f for line in page]
-        post = [line for page in pages[last + 1:] for line in page]
+        pre = [line.text for page in pages[:first] for line in page]
+        notam_pages = [page for page, f in zip(pages, flags) if f]
+        post = [line.text for page in pages[last + 1:] for line in page]
     else:
-        pre = [line for page in pages for line in page]
-        notam, post = [], []
+        pre = [line.text for page in pages for line in page]
+        notam_pages, post = [], []
+    notam = [line.text for page in notam_pages for line in page]
 
     warnings: list[str] = []
     legs, body_end = _parse_legs(pre, warnings)
@@ -377,11 +411,24 @@ def parse_flight_plan(source: str | Path | bytes, name: str | None = None) -> Fl
             dispatcher = m.group(1).strip()
             break
 
+    today = (generated or datetime.now(timezone.utc).replace(tzinfo=None)).date()
     for leg in legs:  # fall back to NOTAM airport headers when a leg has no FPL
         leg.dep_icao = leg.dep_icao or iata_to_icao.get(leg.orig, "")
         leg.dest_icao = leg.dest_icao or iata_to_icao.get(leg.dest, "")
         if not leg.alternates and leg.altn in iata_to_icao:
             leg.alternates = [iata_to_icao[leg.altn]]
+        if leg.date_of_flight is None and leg.date_text[2:] in MONTHS:   # "30SEP": the year nearest the brief
+            options = [_safe_date(today.year + shift, MONTHS[leg.date_text[2:]], int(leg.date_text[:2]))
+                       for shift in (-1, 0, 1)]
+            leg.date_of_flight = min((d for d in options if d), key=lambda d: abs(d - today), default=None)
+
+    # The remarks only list NOTAMs that could be checked; say so when they could not.
+    notams = parse_notams(notam_pages)
+    if not notams and any(NOTAM_START_RE.match(line) for line in notam):
+        warnings.append("The NOTAM pages could not be read - closures and outages were not added to the remarks.")
+    for leg in legs:
+        if notams and not leg.departure:
+            warnings.append(f"{leg.label}: scheduled times not found - NOTAMs were not checked for this leg.")
 
     return FlightPlan(
         path=path,
@@ -393,4 +440,5 @@ def parse_flight_plan(source: str | Path | bytes, name: str | None = None) -> Fl
         dispatcher=dispatcher,
         iata_to_icao=iata_to_icao,
         warnings=warnings,
+        notams=notams,
     )

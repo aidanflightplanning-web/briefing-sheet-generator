@@ -200,11 +200,12 @@ def _preformatted(text: str, font: str) -> list[Para]:
 
 
 def _bullets(text: str, font: str) -> list[Para]:
+    """Point form for several items, or for a single item written with a bullet ("\u2022 TTPP ...")."""
+    marker = re.compile(r"^[\u2022*-]\s+(?=\S)")
     items = [line.strip() for line in (text or "").split("\n") if line.strip()]
-    if len(items) <= 1:
+    if len(items) <= 1 and not any(marker.match(item) for item in items):
         return [Para(items[0] if items else "-")]
-    return [Para(re.sub(r"^[\u2022*-]\s*", "", item), HANGING_INDENT, HANGING_INDENT, bullet=True)
-            for item in items]
+    return [Para(marker.sub("", item), HANGING_INDENT, HANGING_INDENT, bullet=True) for item in items]
 
 
 def _layout(paras: list[Para], font: str) -> list[Line]:

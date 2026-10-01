@@ -6,7 +6,8 @@ Word form exactly: same layout, fonts, logo, "Wheels UP!" watermark and footer. 
 content continues on a second page, as in the Word form.
 
 Only the **gate position** and the **passenger load of each leg** are entered by hand.
-Everything else comes from the flight plan and the MEL sheet.
+Everything else comes from the flight plan and the MEL sheet. B737 and ATR flight plans
+are supported, including packages that cover a whole rotation (several legs).
 
 It runs as a **web app** (Streamlit) or as a **Windows desktop app**. No flight plans or
 MEL workbooks are stored in this repository or by the web app.
@@ -64,7 +65,7 @@ Desktop settings are stored in `%APPDATA%\BriefingSheetGenerator\settings.json`.
 | Enroute airport | ETP airports (Equal Time Point section), otherwise `N/A`. |
 | Flight plan fuel | TOTAL FUEL REQUIRED of each leg, rounded up to 100 kg. A leg whose remarks say LOADSHEET TO CONFIRM gets `-LOADSHEET TO CONFIRM`. |
 | Alt filed | Alternates from the ATC flight plan: `MKJP / TBPB & TGPY`. |
-| Additional information | Dispatcher remarks (RMKS) of each leg, except RAIM CHECK VALIDATED. Multi-leg remarks end with `EX <station>`. Several remarks are shown as bullets, none as `-`. |
+| Additional information | Dispatcher remarks (RMKS) of each leg, except RAIM CHECK VALIDATED (multi-leg remarks end with `EX <station>`), followed by the closure and outage NOTAMs for the flight (see below). Several items are shown as bullets, none as `-`. |
 | Dispatcher | `DISPATCHER - ...` line of the flight plan. |
 | Date | Local date (UTC-4) of the brief's "Briefing generated" time. |
 
@@ -81,10 +82,47 @@ indented 2 spaces, `TEMPO` groups are indented 4 spaces.
 - If the aircraft is not on any MEL sheet, the M.E.L box is left empty with a warning.
   `NIL REPORTED` is only printed after the aircraft was actually checked.
 
+### NOTAM screening
+
+The NOTAM pages of the brief are checked for the **departure, destination, alternate and
+en-route alternate (ETP) airports** of every leg. A NOTAM is added to Additional
+information, in point form, when it reports one of these and is in force between **one
+hour before departure and one hour after arrival** (for an alternate, plus the flying
+time to it):
+
+- the aerodrome closed, or its control tower closed
+- a runway closed
+- a navigation aid out of service: VOR, DME, TACAN, NDB, locator, ILS, localizer or glide
+  path reported as U/S, unusable, withdrawn, unreliable or not to be used
+- an instrument approach procedure not available, suspended or not authorised
+
+Each item gives the airport, the period and the NOTAM text, with the NOTAM number for
+reference:
+
+```
+• KIAD 21SEP26 1000Z-01NOV26 0359Z: RWY 01C/19C CLSD [A5101/26]
+• KPHL 22SEP26 0200Z-26SEP26 1100Z DLY 0200-1100: RWY 17/35 CLSD [A5052/26]
+• TJSJ 23SEP26 1858Z-UFN: SJU NAV VORTAC U/S [09/266]
+```
+
+A NOTAM with a plain daily schedule (`0300 - 1000`, `DLY 2200-1000`) only counts when the
+flight falls inside the daily period. Schedules given by weekday or date are not
+interpreted: such a NOTAM is listed for its whole validity, with the schedule in its text.
+
+Not listed: taxiway, apron and stand closures, lighting and visual aids (PAPI, approach
+and runway lights), signs and markings, obstacles, marker beacons, ATC frequencies, and
+procedure amendments that only mention a navaid. Runway works without a closure (`WIP`)
+are not listed either. Texts longer than 240 characters are cut; the number points to the
+full NOTAM. Delete or edit any line in the review before generating.
+
+This screening is an aid for the dispatcher and does not replace reading the NOTAMs. If a
+leg's times or the NOTAM pages cannot be read, a warning is shown instead of an empty list.
+
 ## Limits
 
 - TAFs and SIGMETs are taken from the flight plan brief, which is what the crew receives.
   They can differ from weather pulled from other sources after the brief was generated.
+- NOTAMs are those in the brief; anything issued after the brief was generated is not seen.
 - MEL manual pages are not added to the sheet.
 
 ## Development
@@ -107,6 +145,7 @@ PDF and Excel files.
 | `briefsheet/cli.py` | Command line |
 | `briefsheet/flightplan.py` | Reads the flight plan brief |
 | `briefsheet/mel.py` | Reads the MEL workbooks |
+| `briefsheet/notams.py` | Reads the NOTAM pages and picks the closures and outages |
 | `briefsheet/builder.py` | Fills in the fields |
 | `briefsheet/render.py` | Draws the SOC001 form |
 | `briefsheet/output.py` | Output files, flight plan + sheet package |

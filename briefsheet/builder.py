@@ -13,12 +13,14 @@ from datetime import date, datetime, timedelta, timezone
 
 from .flightplan import FlightPlan
 from .mel import MelLookup
+from .notams import flight_remarks
 from .taf import format_taf
 
 DEFAULT_ROUTE = "STANDARD COMPANY ROUTINGS"
 DEFAULT_CARGO = "TBA"
 NIL_MEL = "NIL REPORTED"
 NIL_SIGMET = "NIL EN RTE"
+BULLET = "•"
 CHECKLIST_ITEMS = ("CFP", "METARS/TAFS", "NOTAMS", "MAP", "00Z", "06Z", "12Z", "18Z")
 DEFAULT_CHECKLIST = {"CFP": True, "METARS/TAFS": True, "NOTAMS": True,
                      "MAP": False, "00Z": False, "06Z": False, "12Z": False, "18Z": False}
@@ -147,7 +149,10 @@ def alternates_text(fp: FlightPlan) -> str:
 
 
 def additional_info(fp: FlightPlan) -> str:
-    """Dispatcher remarks (RMKS) from each leg, one per line; '-' when there are none."""
+    """Dispatcher remarks (RMKS) of each leg, then the closure/outage NOTAMs for the flight.
+
+    One item per line; several items, or any NOTAM, are written in point form. '-' when there is nothing.
+    """
     items = []
     for leg in fp.legs:
         text = re.sub(r"\s+", " ", " ".join(leg.remarks)).strip()
@@ -158,6 +163,10 @@ def additional_info(fp: FlightPlan) -> str:
         if len(fp.legs) > 1:
             text += f" EX {leg.orig}"
         items.append(text)
+    notams = flight_remarks(fp)
+    items += notams
+    if notams or len(items) > 1:
+        items = [f"{BULLET} {item}" for item in items]
     return "\n".join(items) if items else "-"
 
 

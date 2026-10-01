@@ -13,6 +13,7 @@ from pathlib import Path
 from . import mel
 from .builder import build_briefing, briefing_date
 from .flightplan import FlightPlanError, parse_flight_plan
+from .notams import flight_remarks
 from .output import OutputError, write_outputs
 from .settings import Settings
 
@@ -47,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         from .gui import main as gui_main
         return gui_main(args.flight_plan)
 
+    if hasattr(sys.stdout, "reconfigure"):   # NOTAM and MEL text may hold characters the console cannot show
+        sys.stdout.reconfigure(errors="replace")
     settings = Settings.load()
     mel_paths = args.mel or settings.mel_paths
     if args.mel and args.save_mel:
@@ -85,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
         note = "" if lk.exact_date else f"  (no sheet for {day:%d/%m/%y}; latest sheet used)"
         items = "; ".join(i.briefing_text for i in lk.items) or "NIL REPORTED"
         print(f"MEL 9Y-{lk.registration}: {items}\n  from {lk.source}{note}")
+    remarks = flight_remarks(fp)
+    print(f"NOTAMs: {len(remarks)} closure/outage item(s) added to the remarks")
+    for remark in remarks:
+        print(f"  - {remark}")
 
     gate = args.gate if args.gate is not None else _ask("Gate position: ")
     pax = list(args.pax or [])

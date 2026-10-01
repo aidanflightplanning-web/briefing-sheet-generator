@@ -19,6 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import mel as melmod
 from .builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from .flightplan import FlightPlan, parse_flight_plan
+from .notams import flight_remarks
 from .output import OutputError, write_outputs
 from .render import asset
 from .settings import Settings
@@ -318,8 +319,11 @@ class App(tk.Tk):
         legs = "\n".join(f"{leg.flight}  {leg.dep_icao}–{leg.dest_icao}  {leg.date_text}  9Y-{leg.registration}"
                          for leg in fp.legs)
         warnings = "".join(f"\n⚠ {w}" for w in fp.warnings)
-        self.fp_label.configure(text=f"{self.fp_path.name}\n{legs}\nBriefing date {day:%d/%m/%y}{warnings}",
-                                foreground=WARN if fp.warnings else "black")
+        notams = len(flight_remarks(fp))
+        self.fp_label.configure(
+            text=f"{self.fp_path.name}\n{legs}\nBriefing date {day:%d/%m/%y}\n"
+                 f"NOTAMs: {notams} closure/outage item{'' if notams == 1 else 's'} added to the remarks{warnings}",
+            foreground=WARN if fp.warnings else "black")
 
         for child in self.pax_frame.winfo_children():
             child.destroy()

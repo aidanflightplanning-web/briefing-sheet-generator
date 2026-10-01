@@ -21,6 +21,7 @@ from PIL import Image
 from briefsheet import mel
 from briefsheet.builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from briefsheet.flightplan import FlightPlan, parse_flight_plan
+from briefsheet.notams import flight_remarks
 from briefsheet.output import output_names, package_pdf
 from briefsheet.render import asset, render_briefing
 
@@ -177,8 +178,11 @@ with st.container(border=True):
     left, right = st.columns([3, 2], gap="large")
     with left:
         st.markdown("**Flight plan**")
+        notam_items = len(flight_remarks(fp))
         st.markdown("  \n".join(f"`{leg.flight}` {leg.dep_icao}–{leg.dest_icao} · {leg.date_text} · "
-                                f"9Y-{leg.registration}" for leg in fp.legs) + f"  \nBriefing date **{day:%d/%m/%y}**")
+                                f"9Y-{leg.registration}" for leg in fp.legs) + f"  \nBriefing date **{day:%d/%m/%y}**"
+                    f"  \nNOTAMs: **{notam_items}** closure/outage item{'' if notam_items == 1 else 's'} added to "
+                    "Additional information")
         for warning in fp.warnings:
             st.warning(warning)
     with right:
