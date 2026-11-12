@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import urllib.request
+import zipfile
 from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -31,7 +33,8 @@ from briefsheet.output import combine, output_names, package_pdf
 from briefsheet.render import asset, render_briefing
 
 UTC_OFFSET_HOURS = -4.0  # dispatch office local time (Trinidad); dates the brief and picks the MEL sheet
-BOOKS_DIR = Path(__file__).resolve().parent / "mel_books"   # MEL books kept on the site (not in git)
+BOOKS_DIR = Path(__file__).resolve().parent / "mel_books"   # MEL books kept on this PC (not in git)
+BOOKS_REPO = "aidanflightplanning-web/briefing-sheet-mel-books"  # MEL books online (public GitHub repository)
 LABELS = {
     "aircraft_reg": "Aircraft reg 9Y-", "flight_no": "Flight # BW", "mel_items": "M.E.L items",
     "cargo": "Cargo", "route": "Route", "wx_departure": "WX @ departure station",
@@ -100,10 +103,22 @@ def _github_pdfs(repo: str, token: str) -> tuple[tuple[str, str, str], ...]:
                  if item.get("type") == "file" and item["name"].lower().endswith(".pdf"))
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def _github_version(repo: str) -> str:
+    """Latest commit of a public GitHub repository, checked every 10 minutes through the git
+    protocol (not the GitHub API, which allows few requests without a token)."""
+    data = _get(f"https://github.com/{repo}.git/info/refs?service=git-upload-pack", "")
+    m = re.search(rb"([0-9a-f]{40}) HEAD\x00", data) or re.search(rb"([0-9a-f]{40}) refs/heads/main\b", data)
+    if not m:
+        raise ValueError("no main branch")
+    return m.group(1).decode()
+
+
 def _book_sources() -> tuple[tuple, tuple, str, list[str]]:
-    """What identifies the stored books: the PDFs in the mel_books folder (name, size, time)
-    and the files at the location in the [mel_books] section of the app's secrets:
-    github_repo = "owner/name" (every PDF in it) and/or urls = [...], with token = "..."."""
+    """What identifies the stored books: the PDFs in the mel_books folder (name, size, time),
+    else every PDF in the public BOOKS_REPO repository (by its latest commit). The app's
+    secrets can name another location in a [mel_books] section: github_repo = "owner/name"
+    (with token = "..." for a private one) and/or urls = [...]."""
     files = tuple((p.name, p.stat().st_size, p.stat().st_mtime) for p in sorted(BOOKS_DIR.glob("*.pdf")))
     try:
         config = dict(st.secrets.get("mel_books", {}))
@@ -111,11 +126,18 @@ def _book_sources() -> tuple[tuple, tuple, str, list[str]]:
         config = {}
     token, errors = str(config.get("token", "")), []
     remote = [(unquote(Path(urlparse(url).path).name) or "MEL book.pdf", url, "") for url in config.get("urls", ())]
-    if config.get("github_repo"):
+    repo = str(config.get("github_repo", "")) or ("" if files else BOOKS_REPO)
+    if repo and token:
         try:
-            remote += _github_pdfs(str(config["github_repo"]), token)
+            remote += _github_pdfs(repo, token)
         except Exception as exc:
-            errors.append(f"cannot list the MEL books in {config['github_repo']}: {exc}")
+            errors.append(f"cannot list the MEL books in {repo}: {exc}")
+    elif repo and not files:
+        try:
+            version = _github_version(repo)
+            remote.append(("", f"https://codeload.github.com/{repo}/zip/{version}", version))
+        except Exception as exc:
+            errors.append(f"cannot reach the MEL books in {repo}: {exc}")
     local = {name for name, _, _ in files}
     return files, tuple(r for r in remote if r[0] not in local), token, errors
 
@@ -133,10 +155,16 @@ def stored_books(files: tuple, remote: tuple, token: str) -> tuple[list[melbook.
             errors.append(f"{name}: {exc}")
     for name, url, _ in remote:
         try:
+            if urlparse(url).netloc == "codeload.github.com":   # the whole repository as a zip
+                with zipfile.ZipFile(io.BytesIO(_get(url, ""))) as archive:
+                    for entry in sorted(archive.namelist()):
+                        if entry.lower().endswith(".pdf"):
+                            books.append(melbook.load_book(archive.read(entry), name=entry.rsplit("/", 1)[-1]))
+                continue
             accept = "application/vnd.github.raw" if urlparse(url).netloc == "api.github.com" else ""
             books.append(melbook.load_book(_get(url, token, accept), name=name))
         except Exception as exc:
-            errors.append(f"{name}: {exc}")
+            errors.append(f"{name or url}: {exc}")
     return books, errors
 
 

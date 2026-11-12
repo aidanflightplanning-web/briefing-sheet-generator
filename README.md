@@ -16,8 +16,8 @@ Two attachments can follow the briefing sheet:
   bottom of the screen, as US Letter pages.
 
 It runs as a **web app** (Streamlit) or as a **Windows desktop app**. No flight plans, MEL
-workbooks or MEL books are stored in this repository. The web app keeps only the MEL
-books, from a folder or a private location (see [MEL books on the web app](#mel-books-on-the-web-app)).
+workbooks or MEL books are stored in this repository. The web app reads the MEL books
+from a separate repository (see [MEL books on the web app](#mel-books-on-the-web-app)).
 
 ## Web app
 
@@ -46,21 +46,21 @@ uploaded each time:
 - **On this PC** (`Run Web App Locally.bat`): put the MEL book PDFs in the `mel_books`
   folder next to `streamlit_app.py`. The folder is kept out of git. For a new revision,
   replace the file; the app picks it up on the next page load.
-- **Online:** the MEL books are kept in a **private** GitHub repository and the app reads
-  every PDF in it. In the app's secrets (Streamlit Community Cloud: the app's
-  **Settings → Secrets**) name the repository and a read-only access token for it:
+- **Online:** the app reads every PDF in the GitHub repository
+  [briefing-sheet-mel-books](https://github.com/aidanflightplanning-web/briefing-sheet-mel-books)
+  (`BOOKS_REPO` in `streamlit_app.py`). That repository is public, so anyone can download
+  the books from it. No token or secrets are needed. The `mel_books` folder on this PC is
+  a copy of it: for a new revision, replace the PDF there, then commit and push it in
+  that folder; the app picks it up within ten minutes.
+
+  The app's secrets can point somewhere else instead, for example a private repository
+  with a read-only token:
 
   ```toml
   [mel_books]
-  github_repo = "OWNER/briefing-sheet-mel-books"
+  github_repo = "OWNER/REPO"
   token = "fine-grained token: only that repository, Contents read-only"
   ```
-
-  For a new revision, replace the PDF in that repository; the app notices within ten
-  minutes. Files elsewhere can be listed instead with `urls = ["https://...", ...]`.
-  The token is only sent to GitHub for that repository (or to those URLs). Never put
-  the MEL books in this (public) repository. When the token expires the app shows a
-  warning and the MEL book upload box until a new token is saved.
 
 **Deploy on Streamlit Community Cloud:** sign in at [share.streamlit.io](https://share.streamlit.io)
 with GitHub, choose **Create app**, pick this repository, branch `main` and main file
