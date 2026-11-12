@@ -219,6 +219,8 @@ class App(tk.Tk):
         ttk.Button(side, text="Refresh", command=self.refresh_charts).grid(row=0, column=0, sticky="e")
         self.chart_status = ttk.Label(side, text="", foreground=MUTED, wraplength=190, justify="right")
         self.chart_status.grid(row=1, column=0, sticky="e", pady=(6, 0))
+        self.chart_window = ttk.Label(box, text="", foreground=MUTED)
+        self.chart_window.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     # wind charts ---------------------------------------------------------------
     def refresh_charts(self):
@@ -281,12 +283,29 @@ class App(tk.Tk):
             valid = chart.valid
             text = f"+{chart.hour:02d} h\n" + (f"{valid:%H%MZ %a %d}".upper() if valid else "valid ?")
             ttk.Checkbutton(frame, text=text, variable=var).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        self._show_window()
+
+    def _is_b737(self) -> bool:
+        return bool(self.fp) and any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737"
+                                     for leg in self.fp.legs)
+
+    def _show_window(self):
+        """The ±3 h flight window that decides which charts are ticked (B737 flights)."""
+        window = windcharts.selection_text(self.fp) if self._is_b737() else ""
+        if not window or not self.charts:
+            self.chart_window.configure(text="For B737 flights the charts valid from 3 h before departure to "
+                                             "3 h after arrival are ticked.", foreground=MUTED)
+            return
+        ticked = windcharts.suggested_hours(self.charts, self.fp)
+        if ticked:
+            self.chart_window.configure(text=f"Flight window ±3 h: {window}  –  {len(ticked)} chart"
+                                             f"{'s' if len(ticked) != 1 else ''} ticked", foreground=OK)
+        else:
+            self.chart_window.configure(text=f"Flight window ±3 h: {window}  –  no chart is valid in this "
+                                             "window", foreground=WARN)
 
     def _suggested_hours(self) -> list[int]:
-        if not self.fp or not any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737"
-                                  for leg in self.fp.legs):
-            return []
-        return windcharts.suggested_hours(self.charts, self.fp)
+        return windcharts.suggested_hours(self.charts, self.fp) if self._is_b737() else []
 
     def _view_chart(self, chart: windcharts.WindChart):
         path = Path(tempfile.gettempdir()) / f"BriefingSheet_wind_F{chart.hour:02d}_{windcharts.LEVEL}_A.gif"

@@ -27,8 +27,8 @@ from a separate repository (see [MEL books on the web app](#mel-books-on-the-web
 2. Upload the **Flight Plan** (PDF). All fields are filled in.
 3. Enter the **gate** and the **PAX load (C/Y)** for each leg.
 4. Check the review section (every field can be edited).
-5. Tick the **wind charts** to attach (for a B737 flight the charts in force during the
-   flight are already ticked), then **Generate briefing sheet**.
+5. Tick the **wind charts** to attach (for a B737 flight the charts valid from 3 h before
+   departure to 3 h after arrival are already ticked), then **Generate briefing sheet**.
 6. Download the briefing sheet, or the flight plan with the sheet appended at the end.
    Both contain the attachments after the sheet; the preview shows every page.
 
@@ -153,8 +153,9 @@ downloaded from [aviationweather.gov/fax](https://aviationweather.gov/fax/): the
 forecasts from +06 h to +36 h of the latest model run. Each chart is labelled with its
 valid time (taken from the chart file) and is in force for three hours either side of it.
 
-For a B737 flight the charts in force between the first departure and the last arrival
-are ticked; for an ATR flight none are. Tick or untick as needed. Each ticked chart is
+For a B737 flight the charts whose valid time is from **3 hours before departure to 3
+hours after arrival** of a leg (both limits included) are ticked, and the screen shows
+that window; for an ATR flight none are. Tick or untick as needed. Each ticked chart is
 attached as a US Letter page, scaled to fit, with a source line. While the AWC is
 publishing a new run the charts can come from two runs; a note says so and **Refresh**
 gets the full set later.

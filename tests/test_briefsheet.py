@@ -570,7 +570,8 @@ class WindCharts(unittest.TestCase):
         self.assertEqual(windcharts._run_time(b"GIF89a", "Wed, 11 Nov 2026 21:40:17 GMT"),
                          datetime(2026, 11, 11, 18, 0))
 
-    def test_charts_in_force_during_the_flight(self):
+    def test_charts_valid_from_3h_before_departure_to_3h_after_arrival(self):
+        # 18Z run: +06 h valid 0000Z 12 NOV, +12 0600Z, +18 1200Z, +24 1800Z, +30 0000Z 13 NOV, +36 0600Z
         charts = [self.chart(h) for h in windcharts.HOURS]
 
         class Leg:
@@ -581,12 +582,20 @@ class WindCharts(unittest.TestCase):
             def __init__(self, *legs):
                 self.legs = list(legs)
 
-        # 0000Z chart covers 2100Z-0300Z, 0600Z chart 0300Z-0900Z
-        flight = Plan(Leg(datetime(2026, 11, 12, 1, 0), datetime(2026, 11, 12, 4, 0)))
-        self.assertEqual(windcharts.suggested_hours(charts, flight), [6, 12])
-        far = Plan(Leg(datetime(2026, 11, 14, 12, 0), datetime(2026, 11, 14, 13, 0)))
-        self.assertEqual(windcharts.suggested_hours(charts, far), [])
-        self.assertEqual(windcharts.suggested_hours(charts, Plan(Leg(None, None))), [])
+        def nov(day, hour, minute=0):
+            return datetime(2026, 11, day, hour, minute)
+
+        ticked = lambda *legs: windcharts.suggested_hours(charts, Plan(*legs))
+        self.assertEqual(ticked(Leg(nov(12, 1), nov(12, 4))), [6, 12])            # window 2200Z-0700Z
+        self.assertEqual(ticked(Leg(nov(12, 3), nov(12, 5))), [6, 12])            # 0000Z is exactly 3 h before
+        self.assertEqual(ticked(Leg(nov(12, 3, 1), nov(12, 8, 59))), [12])        # 0000Z, 1200Z just outside
+        self.assertEqual(ticked(Leg(nov(12, 1), nov(12, 2)), Leg(nov(12, 15), nov(12, 16))),
+                         [6, 18, 24])                                              # long gap on the ground
+        self.assertEqual(ticked(Leg(nov(13, 10), nov(13, 11))), [])               # 0600Z 13 NOV is 4 h before
+        self.assertEqual(ticked(Leg(nov(14, 12), nov(14, 13))), [])
+        self.assertEqual(ticked(Leg(None, None)), [])
+        self.assertEqual(windcharts.selection_text(Plan(Leg(nov(12, 12, 15), nov(12, 16, 40)))),
+                         "0915Z 12 NOV – 1940Z 12 NOV")
         mixed = charts[:1] + [self.chart(12, datetime(2026, 11, 12, 0, 0))]
         self.assertTrue(windcharts.run_summary(mixed).startswith("Update in progress: +12 h"))
 

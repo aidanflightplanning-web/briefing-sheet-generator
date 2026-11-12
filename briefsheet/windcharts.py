@@ -5,7 +5,8 @@ times the AWC publishes (+06 h to +36 h from the model run). Each GIF carries it
 run in a comment ("ProdTime=20261111-1800"), so the valid time is run + forecast hours.
 A chart is valid for three hours either side of its valid time.
 
-Selected charts are added to the briefing package as US Letter pages.
+For a B737 flight the charts valid from 3 h before departure to 3 h after arrival are
+ticked. Selected charts are added to the briefing package as US Letter pages.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ HOURS = (6, 12, 18, 24, 30, 36)
 AREA = "Area A – 65N-50S 120W-25W (Americas)"
 LEVEL = "FL100"
 USER_AGENT = "BriefingSheetGenerator/1.0 (+https://github.com/aidanflightplanning-web/briefing-sheet-generator)"
-HALF_PERIOD = timedelta(hours=3)
+SELECTION_MARGIN = timedelta(hours=3)   # charts valid from 3 h before departure to 3 h after arrival
 PROD_TIME_RE = re.compile(rb"ProdTime=(\d{8})-(\d{4})")
 
 LETTER = (612.0, 792.0)
@@ -54,11 +55,6 @@ class WindChart:
         valid = self.valid
         when = f"VALID {valid:%H%MZ %a %d %b}".upper() if valid else "VALID TIME UNKNOWN"
         return f"+{self.hour:02d} h · {when}"
-
-    def covers(self, start: datetime, end: datetime) -> bool:
-        """Is the chart in force (valid time ± 3 h) at any time between start and end?"""
-        valid = self.valid
-        return bool(valid) and valid - HALF_PERIOD < end and start < valid + HALF_PERIOD
 
     def thumbnail(self, width: int = 360) -> bytes:
         """A small PNG of the chart, for the selection screen."""
@@ -130,27 +126,33 @@ def run_summary(charts: list[WindChart]) -> str:
             "Each chart shows its own valid time; Refresh later for the full set.")
 
 
-def flight_window(fp) -> tuple[datetime, datetime] | None:
-    """First scheduled departure to last scheduled arrival (UTC) of the flight plan."""
-    times = [t for leg in fp.legs for t in (leg.departure, leg.arrival) if t]
-    return (min(times), max(times)) if times else None
+def selection_windows(fp) -> list[tuple[datetime, datetime]]:
+    """For each leg: 3 h before the scheduled departure to 3 h after the scheduled arrival (UTC).
+    Overlapping windows of a rotation are joined."""
+    windows = []
+    for leg in fp.legs:
+        dep, arr = leg.departure, leg.arrival or leg.departure
+        if dep:
+            windows.append((dep - SELECTION_MARGIN, arr + SELECTION_MARGIN))
+    joined: list[tuple[datetime, datetime]] = []
+    for start, end in sorted(windows):
+        if joined and start <= joined[-1][1]:
+            joined[-1] = (joined[-1][0], max(joined[-1][1], end))
+        else:
+            joined.append((start, end))
+    return joined
 
 
 def suggested_hours(charts: list[WindChart], fp) -> list[int]:
-    """Charts in force during the flight; if none, the one closest to it (within 6 h)."""
-    window = flight_window(fp)
-    if not window or not charts:
-        return []
-    start, end = window
-    covering = [c.hour for c in charts if c.covers(start, end)]
-    if covering:
-        return covering
-    middle = start + (end - start) / 2
-    dated = [c for c in charts if c.valid]
-    if not dated:
-        return []
-    nearest = min(dated, key=lambda c: abs(c.valid - middle))
-    return [nearest.hour] if abs(nearest.valid - middle) <= timedelta(hours=6) else []
+    """Charts whose valid time is from 3 h before departure to 3 h after arrival of a leg
+    (both limits included)."""
+    windows = selection_windows(fp)
+    return [c.hour for c in charts if c.valid and any(start <= c.valid <= end for start, end in windows)]
+
+
+def selection_text(fp) -> str:
+    """'0915Z 12 NOV – 1940Z 12 NOV' : the valid times that are ticked."""
+    return ", ".join(f"{start:%H%MZ %d %b} – {end:%H%MZ %d %b}".upper() for start, end in selection_windows(fp))
 
 
 def charts_pdf(charts: list[WindChart]) -> bytes:

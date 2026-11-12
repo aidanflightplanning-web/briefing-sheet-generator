@@ -374,8 +374,8 @@ for names, widths in ((("aircraft_reg", "flight_no", "cargo", "route"), (1, 1, 1
 
 st.subheader("5 · Wind charts")
 st.caption(f"{windcharts.AREA}, {windcharts.LEVEL}, from [aviationweather.gov]({windcharts.PAGE_URL}). "
-           "Ticked charts are attached as US Letter pages. For B737 flights the charts in force during the "
-           "flight are ticked.")
+           "Ticked charts are attached as US Letter pages. For B737 flights the charts valid from 3 h before "
+           "departure to 3 h after arrival are ticked.")
 charts, chart_errors, thumbs = wind_charts()
 for error in chart_errors:
     st.warning(error)
@@ -390,6 +390,15 @@ if charts:
     runs = windcharts.run_summary(charts)
     (st.warning if runs.startswith("Update") else st.caption)(
         f"{runs} · downloaded {charts[0].retrieved:%H%MZ}")
+    window = windcharts.selection_text(fp)
+    if b737 and window:
+        ticked = windcharts.suggested_hours(charts, fp)
+        valid = [c.valid for c in charts if c.valid]
+        span = f"{min(valid):%H%MZ %d %b} – {max(valid):%H%MZ %d %b}".upper() if valid else "none"
+        (st.info if ticked else st.warning)(
+            f"Flight window ±3 h: **{window}** · "
+            + (f"{len(ticked)} chart{'s' if len(ticked) != 1 else ''} ticked" if ticked else
+               f"no chart is valid in this window (the charts available are valid {span})"))
     for column, chart in zip(st.columns(len(charts)), charts):
         ensure(f"wind_{chart.hour}", False)
         column.image(thumbs[chart.hour], width="stretch")
