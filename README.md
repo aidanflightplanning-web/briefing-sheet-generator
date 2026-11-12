@@ -46,19 +46,21 @@ uploaded each time:
 - **On this PC** (`Run Web App Locally.bat`): put the MEL book PDFs in the `mel_books`
   folder next to `streamlit_app.py`. The folder is kept out of git. For a new revision,
   replace the file; the app picks it up on the next page load.
-- **Online:** list the files in the app's secrets (Streamlit Community Cloud: the app's
-  **Settings → Secrets**), pointing to a private location, for example a private GitHub
-  repository with a read-only access token:
+- **Online:** the MEL books are kept in a **private** GitHub repository and the app reads
+  every PDF in it. In the app's secrets (Streamlit Community Cloud: the app's
+  **Settings → Secrets**) name the repository and a read-only access token for it:
 
   ```toml
   [mel_books]
-  urls = ["https://api.github.com/repos/OWNER/REPO/contents/B737-8%20MEL.pdf",
-          "https://api.github.com/repos/OWNER/REPO/contents/ATR%20MEL.pdf"]
-  token = "read-only token for that repository"
+  github_repo = "OWNER/briefing-sheet-mel-books"
+  token = "fine-grained token: only that repository, Contents read-only"
   ```
 
-  The token is only sent to those URLs. Never put the MEL books in this (public)
-  repository.
+  For a new revision, replace the PDF in that repository; the app notices within ten
+  minutes. Files elsewhere can be listed instead with `urls = ["https://...", ...]`.
+  The token is only sent to GitHub for that repository (or to those URLs). Never put
+  the MEL books in this (public) repository. When the token expires the app shows a
+  warning and the MEL book upload box until a new token is saved.
 
 **Deploy on Streamlit Community Cloud:** sign in at [share.streamlit.io](https://share.streamlit.io)
 with GitHub, choose **Create app**, pick this repository, branch `main` and main file

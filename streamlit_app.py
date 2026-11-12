@@ -77,38 +77,64 @@ def read_workbooks(files) -> list[mel.MelWorkbook]:
     return books
 
 
-def _book_sources() -> tuple[tuple, dict]:
-    """What identifies the stored books: the files in mel_books/ (name, size, time) and the
-    [mel_books] section of the app's secrets."""
+def _get(url: str, token: str, accept: str = "") -> bytes:
+    """Download from the location named in the app's secrets; the token goes only there."""
+    headers = {"User-Agent": "BriefingSheetGenerator/1.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if accept:
+        headers["Accept"] = accept
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
+        return response.read()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _github_pdfs(repo: str, token: str) -> tuple[tuple[str, str, str], ...]:
+    """(name, contents URL, version) of each PDF in the (private) GitHub repository, checked
+    every 10 minutes, so a new revision pushed there is picked up without a restart."""
+    import json
+
+    listing = json.loads(_get(f"https://api.github.com/repos/{repo}/contents/", token,
+                              "application/vnd.github+json"))
+    return tuple((item["name"], item["url"], item["sha"]) for item in listing
+                 if item.get("type") == "file" and item["name"].lower().endswith(".pdf"))
+
+
+def _book_sources() -> tuple[tuple, tuple, str, list[str]]:
+    """What identifies the stored books: the PDFs in the mel_books folder (name, size, time)
+    and the files at the location in the [mel_books] section of the app's secrets:
+    github_repo = "owner/name" (every PDF in it) and/or urls = [...], with token = "..."."""
     files = tuple((p.name, p.stat().st_size, p.stat().st_mtime) for p in sorted(BOOKS_DIR.glob("*.pdf")))
     try:
         config = dict(st.secrets.get("mel_books", {}))
     except Exception:  # no secrets file
         config = {}
-    return files, config
+    token, errors = str(config.get("token", "")), []
+    remote = [(unquote(Path(urlparse(url).path).name) or "MEL book.pdf", url, "") for url in config.get("urls", ())]
+    if config.get("github_repo"):
+        try:
+            remote += _github_pdfs(str(config["github_repo"]), token)
+        except Exception as exc:
+            errors.append(f"cannot list the MEL books in {config['github_repo']}: {exc}")
+    local = {name for name, _, _ in files}
+    return files, tuple(r for r in remote if r[0] not in local), token, errors
 
 
 @st.cache_resource(max_entries=2, show_spinner="Loading the stored MEL books…")
-def stored_books(files: tuple, urls: tuple, token: str) -> tuple[list[melbook.MelBook], list[str]]:
-    """MEL books kept on the site, loaded once for all sessions: PDFs in the mel_books folder
-    next to the app and files downloaded from the URLs in the app's secrets (a private
-    location; the token, if any, is sent only to those URLs)."""
+def stored_books(files: tuple, remote: tuple, token: str) -> tuple[list[melbook.MelBook], list[str]]:
+    """MEL books kept on the site, loaded once for all sessions (again only when a file
+    changes): PDFs in the mel_books folder next to the app and the files in the private
+    location named in the app's secrets."""
     books, errors = [], []
     for name, _, _ in files:
         try:
             books.append(melbook.load_book(BOOKS_DIR / name))
         except Exception as exc:
             errors.append(f"{name}: {exc}")
-    for url in urls:
-        name = unquote(Path(urlparse(url).path).name) or "MEL book.pdf"
-        headers = {"User-Agent": "BriefingSheetGenerator/1.0"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        if urlparse(url).netloc == "api.github.com":
-            headers["Accept"] = "application/vnd.github.raw"
+    for name, url, _ in remote:
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
-                books.append(melbook.load_book(response.read(), name=name))
+            accept = "application/vnd.github.raw" if urlparse(url).netloc == "api.github.com" else ""
+            books.append(melbook.load_book(_get(url, token, accept), name=name))
         except Exception as exc:
             errors.append(f"{name}: {exc}")
     return books, errors
@@ -248,9 +274,9 @@ st.caption("Upload the MEL sheets and the flight plan. Everything is filled in a
 col_mel, col_fp = st.columns(2, gap="large")
 mel_files = col_mel.file_uploader("**1 · MEL sheets** (B737 / ATR status workbooks)", type=["xlsx", "xlsm"],
                                   accept_multiple_files=True)
-book_files_, book_config = _book_sources()
-on_site, book_errors = stored_books(book_files_, tuple(book_config.get("urls", ())),
-                                    str(book_config.get("token", "")))
+local_books, remote_books, book_token, source_errors = _book_sources()
+on_site, book_errors = stored_books(local_books, remote_books, book_token)
+book_errors = source_errors + book_errors
 if on_site:
     col_mel.markdown("**MEL books** stored on the site  \n" + "  \n".join(
         f":material/check: {b.fleet or 'MEL'} · {b.page_count} pages · {b.name}" for b in on_site))
