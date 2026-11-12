@@ -41,8 +41,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="remember the --mel workbooks and --mel-book books for next time")
     parser.add_argument("--no-mel-pages", action="store_true", help="do not attach the MEL book pages")
     parser.add_argument("--wind", action="append", default=[], metavar="HOURS",
-                        help="attach the Area A FL100 wind charts: 'auto' (the charts in force during the "
-                             "flight) or forecast hours, e.g. --wind 6 --wind 12")
+                        help="B737 flights: attach the Area A FL100 wind charts, 'auto' (those valid from 3 h "
+                             "before departure to 3 h after arrival) or forecast hours, e.g. --wind 6 --wind 12")
     parser.add_argument("--mel-sheet", metavar="NAME", help='use this worksheet, e.g. "26TH SEPTEMBER 2026"')
     parser.add_argument("--gate", help="gate position (asked for if omitted)")
     parser.add_argument("--pax", action="append", metavar="C/Y", help="pax load, once per leg in order")
@@ -125,7 +125,10 @@ def main(argv: list[str] | None = None) -> int:
             for entry in entries:
                 print(f"  MEL book 9Y-{entry.registration} {entry.note}")
             attachments.append(melbook.pages_pdf(entries))
-    if wind_hours:
+    b737 = any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737" for leg in fp.legs)
+    if wind_hours and not b737:
+        print("Wind charts : not attached - wind charts are for B737 flights only")
+    elif wind_hours:
         charts, errors = windcharts.fetch_charts()
         for error in errors:
             print(f"  WARNING: {error}")
@@ -133,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
         if "auto" in wind_hours:
             hours.update(windcharts.suggested_hours(charts, fp))
         chosen = [c for c in charts if c.hour in hours]
-        print("Wind charts : " + (", ".join(c.label for c in chosen) or "none in force during the flight"))
+        print("Wind charts : " + (", ".join(c.label for c in chosen) or
+                                  "none valid from 3 h before departure to 3 h after arrival"))
         if chosen:
             attachments.append(windcharts.charts_pdf(chosen))
 

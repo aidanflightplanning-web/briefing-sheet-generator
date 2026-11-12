@@ -4,7 +4,8 @@
 2. Open the flight plan PDF - every field is filled in from it and the MEL sheet.
 3. Enter the gate position and the passenger load of each leg.
 4. Review/edit the filled-in fields if needed.
-5. Tick the wind charts to attach (B737: the charts in force during the flight are ticked), then Generate.
+5. B737 flights: tick the wind charts to attach (those valid from 3 h before departure to 3 h after
+   arrival are ticked), then Generate.
 """
 
 from __future__ import annotations
@@ -211,6 +212,8 @@ class App(tk.Tk):
         box = ttk.LabelFrame(root, text=f" 5  Wind charts – {windcharts.AREA}, {windcharts.LEVEL} "
                                         "(ticked charts are attached) ", style="Step.TLabelframe", padding=(8, 4))
         box.grid(row=1, column=1, sticky="ew", pady=(10, 0))
+        box.grid_remove()              # shown for B737 flights only
+        self.chart_box = box
         box.columnconfigure(0, weight=1)
         self.chart_strip = ttk.Frame(box)
         self.chart_strip.grid(row=0, column=0, sticky="w")
@@ -317,6 +320,8 @@ class App(tk.Tk):
         self._open(path)
 
     def _selected_charts(self) -> list[windcharts.WindChart]:
+        if not self._is_b737():   # wind charts go with B737 flights only
+            return []
         return [c for c in self.charts if self.chart_vars.get(c.hour) and self.chart_vars[c.hour].get()]
 
     # helpers ------------------------------------------------------------------
@@ -515,6 +520,10 @@ class App(tk.Tk):
         self._update_mel()
         if self.charts:
             self._show_charts()
+        if self._is_b737():
+            self.chart_box.grid()
+        else:
+            self.chart_box.grid_remove()
         self.gate_var.set("")
         self.folder_button.grid_remove()
         self._set_status("Enter the gate position and passenger loads, then Generate.")

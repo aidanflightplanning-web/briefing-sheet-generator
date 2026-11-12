@@ -372,47 +372,53 @@ for names, widths in ((("aircraft_reg", "flight_no", "cargo", "route"), (1, 1, 1
     for column, name in zip(st.columns(widths), names):
         field(column, name)
 
-st.subheader("5 · Wind charts")
-st.caption(f"{windcharts.AREA}, {windcharts.LEVEL}, from [aviationweather.gov]({windcharts.PAGE_URL}). "
-           "Ticked charts are attached as US Letter pages. For B737 flights the charts valid from 3 h before "
-           "departure to 3 h after arrival are ticked.")
-charts, chart_errors, thumbs = wind_charts()
-for error in chart_errors:
-    st.warning(error)
-if charts:
-    b737 = any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737" for leg in fp.legs)
-    wind_key = (state.fp_key, tuple((c.hour, c.run) for c in charts))
-    if state.get("wind_key") != wind_key:
-        suggested = set(windcharts.suggested_hours(charts, fp)) if b737 else set()
-        for chart in charts:
-            state[f"wind_{chart.hour}"] = chart.hour in suggested
-        state.wind_key = wind_key
-    runs = windcharts.run_summary(charts)
-    (st.warning if runs.startswith("Update") else st.caption)(
-        f"{runs} · downloaded {charts[0].retrieved:%H%MZ}")
-    window = windcharts.selection_text(fp)
-    if b737 and window:
-        ticked = windcharts.suggested_hours(charts, fp)
-        valid = [c.valid for c in charts if c.valid]
-        span = f"{min(valid):%H%MZ %d %b} – {max(valid):%H%MZ %d %b}".upper() if valid else "none"
-        (st.info if ticked else st.warning)(
-            f"Flight window ±3 h: **{window}** · "
-            + (f"{len(ticked)} chart{'s' if len(ticked) != 1 else ''} ticked" if ticked else
-               f"no chart is valid in this window (the charts available are valid {span})"))
-    for column, chart in zip(st.columns(len(charts)), charts):
-        ensure(f"wind_{chart.hour}", False)
-        column.image(thumbs[chart.hour], width="stretch")
-        valid = f"{chart.valid:%H%MZ %a %d %b}".upper() if chart.valid else "valid time unknown"
-        column.checkbox(f"+{chart.hour:02d} h · {valid}", key=f"wind_{chart.hour}")
-        column.markdown(f"[Full size]({chart.url})")
-elif not chart_errors:
-    st.info("No wind charts available.")
-if st.button("Refresh wind charts", icon=":material/refresh:"):
-    wind_charts.clear()
-    st.rerun()
-selected_charts = [c for c in charts if state.get(f"wind_{c.hour}")]
+def wind_chart_section() -> list[windcharts.WindChart]:
+    """Wind charts to tick (B737 flights only). Returns the ticked charts."""
+    st.subheader("5 · Wind charts")
+    st.caption(f"{windcharts.AREA}, {windcharts.LEVEL}, from [aviationweather.gov]({windcharts.PAGE_URL}). "
+               "Ticked charts are attached as US Letter pages. The charts valid from 3 h before departure to "
+               "3 h after arrival are ticked.")
+    charts, chart_errors, thumbs = wind_charts()
+    for error in chart_errors:
+        st.warning(error)
+    if charts:
+        wind_key = (state.fp_key, tuple((c.hour, c.run) for c in charts))
+        if state.get("wind_key") != wind_key:
+            suggested = set(windcharts.suggested_hours(charts, fp))
+            for chart in charts:
+                state[f"wind_{chart.hour}"] = chart.hour in suggested
+            state.wind_key = wind_key
+        runs = windcharts.run_summary(charts)
+        (st.warning if runs.startswith("Update") else st.caption)(
+            f"{runs} · downloaded {charts[0].retrieved:%H%MZ}")
+        window = windcharts.selection_text(fp)
+        if window:
+            ticked = windcharts.suggested_hours(charts, fp)
+            valid = [c.valid for c in charts if c.valid]
+            span = f"{min(valid):%H%MZ %d %b} – {max(valid):%H%MZ %d %b}".upper() if valid else "none"
+            (st.info if ticked else st.warning)(
+                f"Flight window ±3 h: **{window}** · "
+                + (f"{len(ticked)} chart{'s' if len(ticked) != 1 else ''} ticked" if ticked else
+                   f"no chart is valid in this window (the charts available are valid {span})"))
+        for column, chart in zip(st.columns(len(charts)), charts):
+            ensure(f"wind_{chart.hour}", False)
+            column.image(thumbs[chart.hour], width="stretch")
+            valid = f"{chart.valid:%H%MZ %a %d %b}".upper() if chart.valid else "valid time unknown"
+            column.checkbox(f"+{chart.hour:02d} h · {valid}", key=f"wind_{chart.hour}")
+            column.markdown(f"[Full size]({chart.url})")
+    elif not chart_errors:
+        st.info("No wind charts available.")
+    if st.button("Refresh wind charts", icon=":material/refresh:"):
+        wind_charts.clear()
+        st.rerun()
+    return [c for c in charts if state.get(f"wind_{c.hour}")]
 
-st.subheader("6 · Generate")
+
+# Wind charts are attached to B737 flights only; for other flights the section is not shown.
+b737 = any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737" for leg in fp.legs)
+selected_charts = wind_chart_section() if b737 else []
+
+st.subheader("6 · Generate" if b737 else "5 · Generate")
 data = collect(fp)
 blank = ([] if state.get("gate", "").strip() else ["gate position"]) + [
     f"PAX load {leg.flight} {leg.sector}" for i, leg in enumerate(fp.legs) if not state.get(f"pax_{i}", "").strip()]
