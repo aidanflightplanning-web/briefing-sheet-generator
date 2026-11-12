@@ -15,26 +15,50 @@ Two attachments can follow the briefing sheet:
 - **wind/temperature charts** (Area A, FL100) from aviationweather.gov, ticked at the
   bottom of the screen, as US Letter pages.
 
-It runs as a **web app** (Streamlit) or as a **Windows desktop app**. No flight plans or
-MEL workbooks are stored in this repository or by the web app.
+It runs as a **web app** (Streamlit) or as a **Windows desktop app**. No flight plans, MEL
+workbooks or MEL books are stored in this repository. The web app keeps only the MEL
+books, from a folder or a private location (see [MEL books on the web app](#mel-books-on-the-web-app)).
 
 ## Web app
 
-1. Upload the **MEL sheets** (B737 and/or ATR workbooks) and, to attach the MEL pages,
-   the **MEL books** (B737-8 and ATR 72-600 MEL, PDF).
-2. Upload the **flight plan brief** (PDF). All fields are filled in.
+1. Upload the **MEL sheets** (B737 and/or ATR workbooks). The MEL books are stored on the
+   site; another revision can be uploaded for one session under *Use another MEL book
+   revision*.
+2. Upload the **Flight Plan** (PDF). All fields are filled in.
 3. Enter the **gate** and the **PAX load (C/Y)** for each leg.
 4. Check the review section (every field can be edited).
 5. Tick the **wind charts** to attach (for a B737 flight the charts in force during the
    flight are already ticked), then **Generate briefing sheet**.
 6. Download the briefing sheet, or the flight plan with the sheet appended at the end.
-   Both contain the attachments after the sheet.
+   Both contain the attachments after the sheet; the preview shows every page.
 
 Uploaded files are processed in memory for the browser session and are not saved.
 
 **Run locally:** double-click `Run Web App Locally.bat` (or run `streamlit run streamlit_app.py`).
 It opens http://localhost:8501 on this PC only, so changes can be tested before they are
 pushed to GitHub and go live. Close the window to stop it.
+
+### MEL books on the web app
+
+The web app loads the MEL books once and uses them for every session, so they are not
+uploaded each time:
+
+- **On this PC** (`Run Web App Locally.bat`): put the MEL book PDFs in the `mel_books`
+  folder next to `streamlit_app.py`. The folder is kept out of git. For a new revision,
+  replace the file; the app picks it up on the next page load.
+- **Online:** list the files in the app's secrets (Streamlit Community Cloud: the app's
+  **Settings → Secrets**), pointing to a private location, for example a private GitHub
+  repository with a read-only access token:
+
+  ```toml
+  [mel_books]
+  urls = ["https://api.github.com/repos/OWNER/REPO/contents/B737-8%20MEL.pdf",
+          "https://api.github.com/repos/OWNER/REPO/contents/ATR%20MEL.pdf"]
+  token = "read-only token for that repository"
+  ```
+
+  The token is only sent to those URLs. Never put the MEL books in this (public)
+  repository.
 
 **Deploy on Streamlit Community Cloud:** sign in at [share.streamlit.io](https://share.streamlit.io)
 with GitHub, choose **Create app**, pick this repository, branch `main` and main file

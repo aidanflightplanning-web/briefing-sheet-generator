@@ -2,18 +2,22 @@
 
     streamlit run streamlit_app.py
 
-Upload the MEL status workbooks and the flight plan brief; every field except
-the gate position and the passenger loads is filled in automatically and can
-be reviewed before generating. With the MEL books uploaded, the MEL pages of the
-open items are attached; wind charts (Area A, FL100) can be ticked at the bottom.
-Uploaded files are processed in memory for the current browser session only.
+Upload the MEL status workbooks and the flight plan; every field except the
+gate position and the passenger loads is filled in automatically and can be
+reviewed before generating. The MEL pages of the open items are attached from the
+MEL books stored on the site (see stored_books); wind charts (Area A, FL100) can be
+ticked at the bottom. Uploaded files are processed in memory for the current
+browser session only.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import urllib.request
 from dataclasses import asdict
+from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 import pypdfium2 as pdfium
 import streamlit as st
@@ -27,6 +31,7 @@ from briefsheet.output import combine, output_names, package_pdf
 from briefsheet.render import asset, render_briefing
 
 UTC_OFFSET_HOURS = -4.0  # dispatch office local time (Trinidad); dates the brief and picks the MEL sheet
+BOOKS_DIR = Path(__file__).resolve().parent / "mel_books"   # MEL books kept on the site (not in git)
 LABELS = {
     "aircraft_reg": "Aircraft reg 9Y-", "flight_no": "Flight # BW", "mel_items": "M.E.L items",
     "cargo": "Cargo", "route": "Route", "wx_departure": "WX @ departure station",
@@ -70,6 +75,43 @@ def read_workbooks(files) -> list[mel.MelWorkbook]:
         books.append(parsed[key])
     state.workbooks = current
     return books
+
+
+def _book_sources() -> tuple[tuple, dict]:
+    """What identifies the stored books: the files in mel_books/ (name, size, time) and the
+    [mel_books] section of the app's secrets."""
+    files = tuple((p.name, p.stat().st_size, p.stat().st_mtime) for p in sorted(BOOKS_DIR.glob("*.pdf")))
+    try:
+        config = dict(st.secrets.get("mel_books", {}))
+    except Exception:  # no secrets file
+        config = {}
+    return files, config
+
+
+@st.cache_resource(max_entries=2, show_spinner="Loading the stored MEL books…")
+def stored_books(files: tuple, urls: tuple, token: str) -> tuple[list[melbook.MelBook], list[str]]:
+    """MEL books kept on the site, loaded once for all sessions: PDFs in the mel_books folder
+    next to the app and files downloaded from the URLs in the app's secrets (a private
+    location; the token, if any, is sent only to those URLs)."""
+    books, errors = [], []
+    for name, _, _ in files:
+        try:
+            books.append(melbook.load_book(BOOKS_DIR / name))
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    for url in urls:
+        name = unquote(Path(urlparse(url).path).name) or "MEL book.pdf"
+        headers = {"User-Agent": "BriefingSheetGenerator/1.0"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if urlparse(url).netloc == "api.github.com":
+            headers["Accept"] = "application/vnd.github.raw"
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
+                books.append(melbook.load_book(response.read(), name=name))
+        except Exception as exc:
+            errors.append(f"{name}: {exc}")
+    return books, errors
 
 
 def read_books(files) -> list[melbook.MelBook]:
@@ -200,19 +242,34 @@ def previews(pdf: bytes) -> list[bytes]:
 # --- page --------------------------------------------------------------------
 st.image(str(asset("logo.png")), width=150)
 st.title("Flight Crew Briefing Sheet")
-st.caption("Upload the MEL sheets and the flight plan brief. Everything is filled in automatically except the gate "
-           "position and passenger loads. Files are processed in memory for this session and are not stored.")
+st.caption("Upload the MEL sheets and the flight plan. Everything is filled in automatically except the gate "
+           "position and passenger loads. Uploaded files are processed in memory for this session and are not stored.")
 
 col_mel, col_fp = st.columns(2, gap="large")
 mel_files = col_mel.file_uploader("**1 · MEL sheets** (B737 / ATR status workbooks)", type=["xlsx", "xlsm"],
                                   accept_multiple_files=True)
-book_files = col_mel.file_uploader("**MEL books** (B737 / ATR MEL, PDF – to attach the MEL pages of open items)",
-                                   type=["pdf"], accept_multiple_files=True)
-fp_file = col_fp.file_uploader("**2 · Flight plan brief** (PDF)", type=["pdf"])
+book_files_, book_config = _book_sources()
+on_site, book_errors = stored_books(book_files_, tuple(book_config.get("urls", ())),
+                                    str(book_config.get("token", "")))
+if on_site:
+    col_mel.markdown("**MEL books** stored on the site  \n" + "  \n".join(
+        f":material/check: {b.fleet or 'MEL'} · {b.page_count} pages · {b.name}" for b in on_site))
+    with col_mel.expander("Use another MEL book revision for this session"):
+        book_files = st.file_uploader("MEL book (PDF) – used instead of the stored one of the same type",
+                                      type=["pdf"], accept_multiple_files=True)
+else:
+    book_files = col_mel.file_uploader(
+        "**MEL books** (B737 / ATR MEL, PDF – to attach the MEL pages of open items)", type=["pdf"],
+        accept_multiple_files=True)
+for error in book_errors:
+    col_mel.warning(f"Stored MEL book not loaded – {error}")
+fp_file = col_fp.file_uploader("**2 · Flight Plan** (PDF)", type=["pdf"])
 books = read_workbooks(mel_files or [])
-mel_books = read_books(book_files or [])
+uploaded_books = read_books(book_files or [])
+replaced = {b.fleet for b in uploaded_books}
+mel_books = uploaded_books + [b for b in on_site if not b.fleet or b.fleet not in replaced]
 if fp_file is None:
-    st.info("Upload a flight plan brief to start.")
+    st.info("Upload a flight plan to start.")
     st.stop()
 try:
     fp = read_flight_plan(fp_file)
@@ -319,7 +376,7 @@ if st.button("Generate briefing sheet", type="primary", disabled=not books, widt
                 ([f"{len(selected_charts)} wind chart{'s' if len(selected_charts) != 1 else ''}"]
                  if selected_charts else [])
         state.output = {"signature": signature, "sheet": sheet, "package": package_pdf(state.fp_bytes, sheet),
-                        "previews": previews(buffer.getvalue()), "added": added}
+                        "previews": previews(sheet), "added": added}
 
 output = state.get("output")
 if output and output["signature"] == signature:
@@ -331,7 +388,7 @@ if output and output["signature"] == signature:
                            mime="application/pdf", icon=":material/download:", width="stretch", on_click="ignore")
     if output.get("added"):
         st.caption("Attached after the briefing sheet: " + " and ".join(output["added"]) +
-                   " (in both downloads; not shown in the preview below).")
+                   " (in both downloads and in the preview below).")
     _, middle, _ = st.columns([1, 4, 1])
     for page in output["previews"]:
         middle.image(page, width="stretch")
