@@ -22,7 +22,9 @@ MEL workbooks are stored in this repository or by the web app.
 
 Uploaded files are processed in memory for the browser session and are not saved.
 
-**Run locally:** `streamlit run streamlit_app.py`
+**Run locally:** double-click `Run Web App Locally.bat` (or run `streamlit run streamlit_app.py`).
+It opens http://localhost:8501 on this PC only, so changes can be tested before they are
+pushed to GitHub and go live. Close the window to stop it.
 
 **Deploy on Streamlit Community Cloud:** sign in at [share.streamlit.io](https://share.streamlit.io)
 with GitHub, choose **Create app**, pick this repository, branch `main` and main file

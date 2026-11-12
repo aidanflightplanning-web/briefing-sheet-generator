@@ -13,6 +13,13 @@ dist/
 # Tests that need that sample data stay on the dispatcher's PC.
 tests/test_local_examples.py
 
+# Personal documents kept in this folder are not part of the project.
+*.docx
+*.doc
+*.pptx
+*.ppt
+*.msg
+
 .streamlit/secrets.toml
 
 # local preview tooling
