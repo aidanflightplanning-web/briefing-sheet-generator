@@ -44,6 +44,12 @@ SCHEDULE_RE = re.compile(r"^SCHED DEP (\d{4})\s*/\s*(\d{4}) ARR\b")
 ALTERNATE_TIME_RE = re.compile(r"^ALTN\d TIME (\d{2})\.(\d{2})\b")
 TOTAL_FUEL_RE =re.compile(r"^TOTAL FUEL REQUIRED\s+(?:[A-Z]\s+)?(?:\d{1,2}\.\d{2}\s+)?(\d{3,6})\b")
 ETP_RE = re.compile(r"^([A-Z]{4}) TO ([A-Z]{4}) POSN\b")
+# Navlog header and its first line: "N1035.7 W06120.2 R1 0202 00.38 CI022 ..." - TIME is the flight time.
+NAVLOG_HEADER_RE = re.compile(r"^ARP LAT/LONG RTE DIST TIME\b")
+NAVLOG_TIME_RE = re.compile(r"^\S+\s+\S+\s+R\d+\s+\d+\s+(\d{2})\.(\d{2})\b")
+ATC_ROUTE_RE = re.compile(r"^ATC\s*-\s*([A-Z0-9].*)$")      # "ATC - TTPP DCT POS UR515 BGI DCT TBPB"
+ROUTE_CONTINUATION_RE = re.compile(r"^[A-Z0-9/]+(?: [A-Z0-9/]+)*$")
+ROUTE_STOP_RE = re.compile(r"^(?:ATIS|RWY|DERATE|WAYPT|FREQ)\b")
 SUITABILITY_RE = re.compile(r"^([A-Z]{4}) \d{2}:\d{2}Z TO \d{2}:\d{2}Z$")
 PLAN_ID_RE = re.compile(r"^PLAN ID\s+(.+)$")
 DISPATCHER_RE = re.compile(r"^DISPATCHER\s*(?:-|\.{2,})\s*([A-Z][A-Z .'-]*[A-Z])$")
@@ -89,6 +95,15 @@ class Leg:
     sched_dep: str = ""       # "1215" (UTC)
     sched_arr: str = ""
     alternate_minutes: list[int] = field(default_factory=list)   # flying time to each alternate
+    atc_route: str = ""       # "TTPP DCT POS UR515 BGI DCT TBPB" (the ATC route of the navlog)
+    flight_minutes: int | None = None   # TIME of the navlog: 00.38 -> 38
+
+    @property
+    def flight_time(self) -> str:
+        """'05:23' (hours:minutes), or '' when the flight plan has no time."""
+        if self.flight_minutes is None:
+            return ""
+        return f"{self.flight_minutes // 60:02d}:{self.flight_minutes % 60:02d}"
 
     @property
     def departure(self) -> datetime | None:
@@ -234,6 +249,16 @@ def _parse_fpl(chunk: list[str]) -> tuple[dict, int] | tuple[None, int]:
     return fpl, start + len(lines)
 
 
+def _route(first: str, following: list[str]) -> str:
+    """The ATC route: its first line and the lines it wraps onto (up to the IN/ON/OUT form)."""
+    parts = [first.strip()]
+    for line in following[:4]:
+        if not ROUTE_CONTINUATION_RE.match(line) or ROUTE_STOP_RE.match(line):
+            break
+        parts.append(line)
+    return " ".join(parts)
+
+
 def _parse_legs(pre: list[str], warnings: list[str]) -> tuple[list[Leg], int]:
     """Parse every leg. Returns the legs and the index where the weather section starts."""
     headers = [i for i, line in enumerate(pre) if FLTNO_HEADER_RE.match(line)]
@@ -291,8 +316,13 @@ def _parse_legs(pre: list[str], warnings: list[str]) -> tuple[list[Leg], int]:
         leg_end = fpl_end if fpl else 2
         while leg_end < len(chunk) and not _is_weather_start(chunk[leg_end]):
             leg_end += 1
-        for line in chunk[:leg_end]:
-            if leg.total_fuel is None and (fm := TOTAL_FUEL_RE.match(line)):
+        for i, line in enumerate(chunk[:leg_end]):
+            if leg.flight_minutes is None and NAVLOG_HEADER_RE.match(line) and i + 1 < leg_end:
+                if nm := NAVLOG_TIME_RE.match(chunk[i + 1]):
+                    leg.flight_minutes = int(nm.group(1)) * 60 + int(nm.group(2))
+            elif not leg.atc_route and (rm := ATC_ROUTE_RE.match(line)):
+                leg.atc_route = _route(rm.group(1), chunk[i + 1:leg_end])
+            elif leg.total_fuel is None and (fm := TOTAL_FUEL_RE.match(line)):
                 leg.total_fuel = int(fm.group(1))
             elif not leg.sched_dep and (tm := SCHEDULE_RE.match(line)):
                 leg.sched_dep, leg.sched_arr = tm.groups()

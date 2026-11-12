@@ -36,7 +36,7 @@ REVIEW_FIELDS = [  # BriefingData attribute, label, minimum lines
     ("flight_no", "FLIGHT # BW", 1),
     ("mel_items", "M.E.L ITEMS", 2),
     ("cargo", "CARGO", 1),
-    ("route", "ROUTE", 1),
+    ("route", "ROUTE", 2),
     ("wx_departure", "WX @ DEPARTURE", 3),
     ("wx_destination", "WX @ DESTINATION", 3),
     ("wx_alternate", "WX @ ALTERNATE", 3),

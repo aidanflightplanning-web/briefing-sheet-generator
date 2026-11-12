@@ -9,7 +9,7 @@ import unittest
 from datetime import date, datetime
 
 from briefsheet import flightplan, mel, melbook, render, windcharts
-from briefsheet.builder import BriefingData, build_briefing
+from briefsheet.builder import BriefingData, build_briefing, route_text
 from briefsheet.notams import Notam, flight_remarks
 from briefsheet.output import combine, output_names, package_pdf
 from briefsheet.pdftext import extract_pages
@@ -72,6 +72,11 @@ BRIEF = [
      "FLTNO /DATE ORIG/DEST ALTN EQUIP/REG PYLD FUEL RAMP B/O LDWT",
      "BWA123 /01OCT POS /BGI GND B737 /ABC 0100 0070 0600 0020 0580",
      "SCHED DEP 1200/1245 ARR UTC ARAMPWT .......",
+     "ARP LAT/LONG RTE DIST TIME CRZ WCP TMP PAD UNT FOL",
+     "N1035.7 W06120.2 R1 0202 00.38 CI022 P014 M025 1.0 KGS 5127",
+     "ATC CLR ...............................................................",
+     "ATC - TTPP DCT POS UR515 BGI DCT", "TBPB",        # the route wraps onto a second line
+     ". . . . . . . . . . . . . . . . . . . . . . IN . . . . . .ON . . . . ./",
      "TOTAL FUEL REQUIRED I 02.10 006123",
      "DIVERSION TO GND", "ALTN1 TIME 00.30 FL100 B/O 000400 CMR 0800KGS DIST 0100 WCP P005 TDV P15",
      "DIVERSION TO TAB", "ALTN2 TIME 00.20 FL080 B/O 000300 CMR 0700KGS DIST 0060 WCP P005 TDV P15",
@@ -177,6 +182,34 @@ class ParserEdgeCases(unittest.TestCase):
         self.assertEqual((m.group("number"), m.group("equip"), m.group("reg")), ("5", "B737", "BAR"))
 
 
+class RouteText(unittest.TestCase):
+    @staticmethod
+    def plan(*legs):
+        class Leg:
+            def __init__(self, route, minutes):
+                self.atc_route, self.flight_minutes = route, minutes
+
+        class Plan:
+            pass
+
+        fp = Plan()
+        fp.legs = [Leg(r, m) for r, m in legs]
+        return fp
+
+    def test_one_line_per_sector_with_its_flight_time(self):
+        self.assertEqual(route_text(self.plan(("TTPP DCT POS DCT VOKAV DCT SYCJ", 56), ("SYCJ DCT TIM DCT KJFK", 323))),
+                         "TTPP DCT POS DCT VOKAV DCT SYCJ - 00:56\nSYCJ DCT TIM DCT KJFK - 05:23")
+
+    def test_repeated_route_is_stated_once_with_its_longest_time(self):
+        shuttle = self.plan(("TTPP DCT SASIM DCT TTCP", 14), ("TTCP DCT NAPKO DCT TTPP", 18),
+                            ("TTPP DCT SASIM DCT TTCP", 14), ("TTCP DCT NAPKO DCT TTPP", 17))
+        self.assertEqual(route_text(shuttle), "TTPP DCT SASIM DCT TTCP - 00:14\nTTCP DCT NAPKO DCT TTPP - 00:18")
+
+    def test_no_route_in_the_flight_plan(self):
+        self.assertEqual(route_text(self.plan(("", None))), "STANDARD COMPANY ROUTINGS")
+        self.assertEqual(route_text(self.plan(("TTPP DCT TTCP", None))), "TTPP DCT TTCP")
+
+
 class SyntheticBrief(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -191,6 +224,7 @@ class SyntheticBrief(unittest.TestCase):
         self.assertEqual(leg.total_fuel, 6123)
         self.assertEqual((leg.departure, leg.arrival), (datetime(2026, 10, 1, 12, 0), datetime(2026, 10, 1, 12, 45)))
         self.assertEqual(leg.alternate_minutes, [30, 20])
+        self.assertEqual((leg.atc_route, leg.flight_time), ("TTPP DCT POS UR515 BGI DCT TBPB", "00:38"))
         self.assertEqual(self.fp.path.name, "BWA012301TTPP.pdf")
         self.assertEqual(self.fp.briefing_generated, datetime(2026, 10, 1, 2, 30))
 
@@ -198,6 +232,7 @@ class SyntheticBrief(unittest.TestCase):
         d = self.data
         self.assertEqual((d.aircraft_reg, d.flight_no, d.gate, d.pax_load), ("ABC", "123", "5", "3/120"))
         self.assertEqual(d.flight_plan_fuel, "6200KG")
+        self.assertEqual(d.route, "TTPP DCT POS UR515 BGI DCT TBPB - 00:38")
         self.assertEqual(d.alt_filed, "TGPY & TTCP")
         self.assertEqual(d.wx_departure.splitlines(), [
             "TAF TTPP 011000Z 0112/0212 09010KT 9999 SCT018", "  PROB30", "    TEMPO 0114/0118 4000 SHRA BKN014"])

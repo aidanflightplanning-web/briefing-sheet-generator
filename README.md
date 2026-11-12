@@ -102,7 +102,8 @@ Desktop settings are stored in `%APPDATA%\BriefingSheetGenerator\settings.json`.
 | Flight # BW | Flight numbers of the legs: `476-477`, `418`. Flight numbers below 100 are written with four digits (`0005`). |
 | Gate position / Pax load | Entered by hand. Pax loads are separated by ` / ` per leg. |
 | M.E.L items | Open items for the aircraft on the MEL sheet for the briefing date (`MEL#  DESCRIPTION`), or `NIL REPORTED`. |
-| Cargo / Route | `TBA` / `STANDARD COMPANY ROUTINGS` (can be edited). |
+| Cargo | `TBA` (can be edited). |
+| Route | The ATC route of each sector (`ATC - ...` line of the navlog, including the line it wraps onto) followed by its flight time, the TIME column of the navlog in hours:minutes: `TTPP DCT POS DCT VOKAV DCT GATUX DCT AKSIN DCT OGRUM DCT SYCJ - 00:56`. One line per sector; a route flown more than once in the package (the POS-TAB shuttle) is listed once, with its longest time. `STANDARD COMPANY ROUTINGS` if the flight plan has no route. |
 | WX @ departure | TAF of the first departure airport. |
 | WX @ destination | TAF of each leg's destination. A return to the departure station is not repeated. |
 | WX @ alternate | TAF of each filed alternate. An alternate already shown above becomes `SEE TTPP ABV`. |

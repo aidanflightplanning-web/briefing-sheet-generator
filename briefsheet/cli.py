@@ -47,7 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--gate", help="gate position (asked for if omitted)")
     parser.add_argument("--pax", action="append", metavar="C/Y", help="pax load, once per leg in order")
     parser.add_argument("--cargo", help="cargo (default TBA)")
-    parser.add_argument("--route", help="route remark (default STANDARD COMPANY ROUTINGS)")
+    parser.add_argument("--route", help="route text instead of the ATC routes and flight times of the flight plan")
     parser.add_argument("--out", metavar="DIR", help="output folder (default: the flight plan's folder)")
     parser.add_argument("--no-append", action="store_true", help="do not write the flight plan + sheet package")
     parser.add_argument("--gui", action="store_true", help="open the window")

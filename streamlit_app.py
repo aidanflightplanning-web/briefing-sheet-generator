@@ -42,7 +42,7 @@ LABELS = {
     "enroute_airport": "Enroute airport", "flight_plan_fuel": "Flight plan fuel", "alt_filed": "Alt filed",
     "additional_info": "Additional information", "dispatcher": "Dispatcher", "date": "Date",
 }
-TEXT_AREAS = {"mel_items", "wx_departure", "wx_destination", "wx_alternate", "sigmet_info", "additional_info"}
+TEXT_AREAS = {"mel_items", "route", "wx_departure", "wx_destination", "wx_alternate", "sigmet_info", "additional_info"}
 KEEP_CASE = {"wx_departure", "wx_destination", "wx_alternate", "sigmet_info"}
 
 st.set_page_config(page_title="Flight Crew Briefing Sheet", page_icon=Image.open(asset("icon.ico")), layout="wide")
@@ -365,7 +365,7 @@ st.caption("Filled in from the flight plan and the MEL sheet. Every field can be
 for column, item in zip(st.columns(len(CHECKLIST_ITEMS)), CHECKLIST_ITEMS):
     ensure(f"c_{item}", state.initial.checklist[item])
     column.checkbox(item, key=f"c_{item}")
-for names, widths in ((("aircraft_reg", "flight_no", "cargo", "route"), (1, 1, 1, 2)), (("mel_items",), (1,)),
+for names, widths in ((("aircraft_reg", "flight_no", "cargo"), (1, 1, 1)), (("mel_items",), (1,)), (("route",), (1,)),
                       (("wx_departure", "wx_destination"), (1, 1)), (("wx_alternate", "sigmet_info"), (1, 1)),
                       (("enroute_airport", "flight_plan_fuel", "alt_filed"), (1, 1, 1)),
                       (("additional_info",), (1,)), (("dispatcher", "date"), (1, 1))):

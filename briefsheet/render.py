@@ -176,6 +176,11 @@ def _plain(text: str, font: str) -> list[Para]:
     return [Para(line.strip()) for line in (text or "").strip("\n").split("\n")]
 
 
+def _routes(text: str, font: str) -> list[Para]:
+    """One route per line; a long route that wraps continues indented under its first line."""
+    return [Para(line.strip(), 0.0, HANGING_INDENT) for line in (text or "").strip("\n").split("\n")]
+
+
 def _separated(text: str, font: str) -> list[Para]:
     parts = [p.strip() for p in re.split(r"\s+/\s+", (text or "").strip())]
     return [Para(SEPARATOR.join(parts))]
@@ -224,7 +229,7 @@ ROWS = [
     ("pax_load", [("PAX LOAD", False)], _separated, 19.94),
     ("mel_items", [("M.E.L ITEMS", False)], _mel, 19.80),
     ("cargo", [("CARGO", False)], _plain, 18.48),
-    ("route", [("ROUTE", False)], _plain, 25.44),
+    ("route", [("ROUTE", False)], _routes, 25.44),
     ("wx_departure", [("WX @", True), ("DEPARTURE", False), ("STATION", False)], _preformatted, 0.0),
     ("wx_destination", [("WX @", True), ("DESTINATION", False)], _preformatted, 0.0),
     ("wx_alternate", [("WX @", True), ("ALTERNATE", False)], _preformatted, 0.0),

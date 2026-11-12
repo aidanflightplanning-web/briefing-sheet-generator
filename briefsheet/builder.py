@@ -122,6 +122,26 @@ def sigmet_text(fp: FlightPlan) -> str:
     return _join_blocks([[block[0]] + [" " + line for line in block[1:]] for block in fp.sigmets])
 
 
+def route_text(fp: FlightPlan) -> str:
+    """The ATC route of each sector followed by its flight time, one sector per line:
+    "TTPP DCT POS DCT VOKAV DCT GATUX DCT AKSIN DCT OGRUM DCT SYCJ - 00:56".
+    A route flown more than once (the POS-TAB shuttle) is listed once, with its longest time."""
+    order: list[str] = []
+    longest: dict[str, int | None] = {}
+    for leg in fp.legs:
+        route = leg.atc_route
+        if not route:
+            continue
+        if route not in longest:
+            order.append(route)
+            longest[route] = leg.flight_minutes
+        elif leg.flight_minutes is not None and (longest[route] or 0) < leg.flight_minutes:
+            longest[route] = leg.flight_minutes
+    lines = [f"{r} - {longest[r] // 60:02d}:{longest[r] % 60:02d}" if longest[r] is not None else r
+             for r in order]
+    return "\n".join(lines) or DEFAULT_ROUTE
+
+
 def enroute_airports(fp: FlightPlan) -> str:
     """ETP airports (excluding the departure/destination ends), or N/A."""
     ends = {leg.dep_icao for leg in fp.legs} | {leg.dest_icao for leg in fp.legs}
@@ -184,7 +204,7 @@ def mel_text(lookups: list[MelLookup]) -> str:
 
 def build_briefing(fp: FlightPlan, mel_lookups: list[MelLookup] | None = None, *,
                    gate: str = "", pax: list[str] | None = None,
-                   cargo: str = DEFAULT_CARGO, route: str = DEFAULT_ROUTE,
+                   cargo: str = DEFAULT_CARGO, route: str | None = None,
                    utc_offset_hours: float = -4.0, dispatcher: str = "") -> BriefingData:
     wx_dep, wx_dest, wx_alt = weather_sections(fp)
     pax = pax or []
@@ -195,7 +215,7 @@ def build_briefing(fp: FlightPlan, mel_lookups: list[MelLookup] | None = None, *
         pax_load=" / ".join(p.strip() for p in pax),
         mel_items=mel_text(mel_lookups or []),
         cargo=cargo,
-        route=route,
+        route=route or route_text(fp),
         wx_departure=wx_dep,
         wx_destination=wx_dest,
         wx_alternate=wx_alt,
