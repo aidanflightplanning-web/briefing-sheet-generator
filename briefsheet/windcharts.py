@@ -1,0 +1,184 @@
+"""WAFC wind/temperature charts from the Aviation Weather Center (https://aviationweather.gov/fax/).
+
+Only the Area A chart (65N-50S 120W-25W, Americas) at FL100 is used, at the six forecast
+times the AWC publishes (+06 h to +36 h from the model run). Each GIF carries its model
+run in a comment ("ProdTime=20261111-1800"), so the valid time is run + forecast hours.
+A chart is valid for three hours either side of its valid time.
+
+Selected charts are added to the briefing package as US Letter pages.
+"""
+
+from __future__ import annotations
+
+import io
+import re
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+
+PAGE_URL = "https://aviationweather.gov/fax/"
+CHART_URL = "https://aviationweather.gov/data/products/fax/F{hour:02d}_wind_100_a.gif"
+HOURS = (6, 12, 18, 24, 30, 36)
+AREA = "Area A – 65N-50S 120W-25W (Americas)"
+LEVEL = "FL100"
+USER_AGENT = "BriefingSheetGenerator/1.0 (+https://github.com/aidanflightplanning-web/briefing-sheet-generator)"
+HALF_PERIOD = timedelta(hours=3)
+PROD_TIME_RE = re.compile(rb"ProdTime=(\d{8})-(\d{4})")
+
+LETTER = (612.0, 792.0)
+MARGIN = 18.0
+CAPTION_SPACE = 14.0
+
+
+class WindChartError(OSError):
+    pass
+
+
+@dataclass
+class WindChart:
+    hour: int                      # forecast hour: 6, 12 ... 36
+    url: str
+    image: bytes                   # the GIF as published
+    run: datetime | None           # model run (UTC, naive)
+    retrieved: datetime            # when it was downloaded (UTC, naive)
+
+    @property
+    def valid(self) -> datetime | None:
+        return self.run + timedelta(hours=self.hour) if self.run else None
+
+    @property
+    def label(self) -> str:
+        """'+06 h · valid 0000Z THU 12 NOV'."""
+        valid = self.valid
+        when = f"VALID {valid:%H%MZ %a %d %b}".upper() if valid else "VALID TIME UNKNOWN"
+        return f"+{self.hour:02d} h · {when}"
+
+    def covers(self, start: datetime, end: datetime) -> bool:
+        """Is the chart in force (valid time ± 3 h) at any time between start and end?"""
+        valid = self.valid
+        return bool(valid) and valid - HALF_PERIOD < end and start < valid + HALF_PERIOD
+
+    def thumbnail(self, width: int = 360) -> bytes:
+        """A small PNG of the chart, for the selection screen."""
+        from PIL import Image
+
+        with Image.open(io.BytesIO(self.image)) as im:
+            im = im.convert("L")
+            im.thumbnail((width, width * 2))
+            buffer = io.BytesIO()
+            im.save(buffer, format="PNG", optimize=True)
+            return buffer.getvalue()
+
+
+def _run_time(image: bytes, last_modified: str | None) -> datetime | None:
+    m = PROD_TIME_RE.search(image[:4096]) or PROD_TIME_RE.search(image)
+    if m:
+        try:
+            return datetime.strptime((m.group(1) + m.group(2)).decode(), "%Y%m%d%H%M")
+        except ValueError:
+            pass
+    if last_modified:  # products appear about 3.5 h after the model run
+        try:
+            stamp = parsedate_to_datetime(last_modified).astimezone(timezone.utc).replace(tzinfo=None)
+        except (TypeError, ValueError):
+            return None
+        stamp -= timedelta(hours=3)
+        return stamp.replace(hour=stamp.hour - stamp.hour % 6, minute=0, second=0, microsecond=0)
+    return None
+
+
+def fetch_chart(hour: int, timeout: float = 30) -> WindChart:
+    url = CHART_URL.format(hour=hour)
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - fixed https URL
+            image = response.read()
+            modified = response.headers.get("Last-Modified")
+    except OSError as exc:
+        raise WindChartError(f"Could not download the +{hour:02d} h wind chart: {exc}") from exc
+    if not image.startswith(b"GIF8"):
+        raise WindChartError(f"The +{hour:02d} h wind chart is not an image ({url})")
+    now = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+    return WindChart(hour, url, image, _run_time(image, modified), now)
+
+
+def fetch_charts(hours=HOURS, timeout: float = 30) -> tuple[list[WindChart], list[str]]:
+    """Download the charts in parallel. Returns (charts in hour order, error messages)."""
+    charts, errors = [], []
+    with ThreadPoolExecutor(max_workers=len(hours) or 1) as pool:
+        futures = [pool.submit(fetch_chart, h, timeout) for h in hours]
+        for future in futures:
+            try:
+                charts.append(future.result())
+            except WindChartError as exc:
+                errors.append(str(exc))
+    return charts, errors
+
+
+def run_summary(charts: list[WindChart]) -> str:
+    """'Model run 12 NOV 0000Z', or a note when the AWC is part way through publishing a new run."""
+    runs = sorted({c.run for c in charts if c.run})
+    if not runs:
+        return ""
+    if len(runs) == 1:
+        return f"Model run {runs[0]:%d %b %H%MZ}".upper()
+    newest = runs[-1]
+    hours = ", ".join(f"+{c.hour:02d}" for c in charts if c.run == newest)
+    return (f"Update in progress: {hours} h from the {newest:%H%MZ} run, the rest from {runs[0]:%H%MZ}. "
+            "Each chart shows its own valid time; Refresh later for the full set.")
+
+
+def flight_window(fp) -> tuple[datetime, datetime] | None:
+    """First scheduled departure to last scheduled arrival (UTC) of the flight plan."""
+    times = [t for leg in fp.legs for t in (leg.departure, leg.arrival) if t]
+    return (min(times), max(times)) if times else None
+
+
+def suggested_hours(charts: list[WindChart], fp) -> list[int]:
+    """Charts in force during the flight; if none, the one closest to it (within 6 h)."""
+    window = flight_window(fp)
+    if not window or not charts:
+        return []
+    start, end = window
+    covering = [c.hour for c in charts if c.covers(start, end)]
+    if covering:
+        return covering
+    middle = start + (end - start) / 2
+    dated = [c for c in charts if c.valid]
+    if not dated:
+        return []
+    nearest = min(dated, key=lambda c: abs(c.valid - middle))
+    return [nearest.hour] if abs(nearest.valid - middle) <= timedelta(hours=6) else []
+
+
+def charts_pdf(charts: list[WindChart]) -> bytes:
+    """One US Letter portrait page per chart, scaled to fit, with a source line."""
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=LETTER, pageCompression=1)
+    pdf.setTitle(f"Wind/temperature charts {LEVEL} {AREA}")
+    width, height = LETTER
+    box_w, box_h = width - 2 * MARGIN, height - 2 * MARGIN - CAPTION_SPACE
+    for chart in charts:
+        with Image.open(io.BytesIO(chart.image)) as im:
+            im = im.convert("L")
+            scale = min(box_w / im.width, box_h / im.height)
+            w, h = im.width * scale, im.height * scale
+            x, y = (width - w) / 2, MARGIN + CAPTION_SPACE + (box_h - h) / 2
+            pdf.drawImage(ImageReader(im), x, y, w, h)
+        pdf.setLineWidth(0.5)
+        pdf.rect(x, y, w, h)
+        pdf.setFont("Helvetica", 7)
+        pdf.setFillGray(0.35)
+        pdf.drawString(MARGIN, MARGIN + 3, f"WAFC {LEVEL} wind/temp · Area A (Americas) · {chart.label}")
+        pdf.drawRightString(width - MARGIN, MARGIN + 3,
+                            f"aviationweather.gov · retrieved {chart.retrieved:%d%b%y %H%MZ}".upper())
+        pdf.setFillGray(0)
+        pdf.showPage()
+    pdf.save()
+    return buffer.getvalue()

@@ -1,7 +1,9 @@
-"""Command-line use: python -m briefsheet FLIGHT_PLAN.pdf [--mel SHEET.xlsx ...]
+"""Command-line use: python -m briefsheet FLIGHT_PLAN.pdf [--mel SHEET.xlsx ...] [--mel-book MEL.pdf ...]
 
 Everything is read from the flight plan and the MEL sheets; only the gate
-position and the passenger load of each leg are asked for.
+position and the passenger load of each leg are asked for. The MEL book pages of
+the open items are attached when MEL books are given (or remembered); wind charts
+are attached with --wind.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import mel
+from . import mel, melbook, windcharts
 from .builder import build_briefing, briefing_date
 from .flightplan import FlightPlanError, parse_flight_plan
 from .notams import flight_remarks
@@ -33,7 +35,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("flight_plan", nargs="?", help="flight plan brief (PDF)")
     parser.add_argument("--mel", action="append", default=[], metavar="XLSX",
                         help="MEL status workbook (repeat for B737 and ATR); defaults to the remembered sheets")
-    parser.add_argument("--save-mel", action="store_true", help="remember the --mel workbooks for next time")
+    parser.add_argument("--mel-book", action="append", default=[], metavar="PDF",
+                        help="MEL book (repeat for B737 and ATR); defaults to the remembered books")
+    parser.add_argument("--save-mel", action="store_true",
+                        help="remember the --mel workbooks and --mel-book books for next time")
+    parser.add_argument("--no-mel-pages", action="store_true", help="do not attach the MEL book pages")
+    parser.add_argument("--wind", action="append", default=[], metavar="HOURS",
+                        help="attach the Area A FL100 wind charts: 'auto' (the charts in force during the "
+                             "flight) or forecast hours, e.g. --wind 6 --wind 12")
     parser.add_argument("--mel-sheet", metavar="NAME", help='use this worksheet, e.g. "26TH SEPTEMBER 2026"')
     parser.add_argument("--gate", help="gate position (asked for if omitted)")
     parser.add_argument("--pax", action="append", metavar="C/Y", help="pax load, once per leg in order")
@@ -52,9 +61,22 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(errors="replace")
     settings = Settings.load()
     mel_paths = args.mel or settings.mel_paths
-    if args.mel and args.save_mel:
-        settings.mel_paths = [str(Path(p).resolve()) for p in args.mel]
+    book_paths = args.mel_book or settings.mel_book_paths
+    if args.save_mel and (args.mel or args.mel_book):
+        if args.mel:
+            settings.mel_paths = [str(Path(p).resolve()) for p in args.mel]
+        if args.mel_book:
+            settings.mel_book_paths = [str(Path(p).resolve()) for p in args.mel_book]
         settings.save()
+    wind_hours = []
+    for value in args.wind:
+        for part in value.replace(",", " ").split():
+            if part.lower() == "auto":
+                wind_hours.append("auto")
+            elif part.isdigit() and int(part) in windcharts.HOURS:
+                wind_hours.append(int(part))
+            else:
+                parser.error(f"--wind takes 'auto' or the forecast hours {', '.join(map(str, windcharts.HOURS))}")
     if not mel_paths:
         parser.error("attach the MEL sheets first: --mel \"B737 MEL SHEET.xlsx\" --mel \"ATR MEL SHEET.xlsx\" "
                      "(add --save-mel to remember them)")
@@ -88,6 +110,33 @@ def main(argv: list[str] | None = None) -> int:
         note = "" if lk.exact_date else f"  (no sheet for {day:%d/%m/%y}; latest sheet used)"
         items = "; ".join(i.briefing_text for i in lk.items) or "NIL REPORTED"
         print(f"MEL 9Y-{lk.registration}: {items}\n  from {lk.source}{note}")
+    attachments = []
+    if lookups and not args.no_mel_pages and any(lk.items for lk in lookups):
+        books = []
+        for path in book_paths:
+            try:
+                books.append(melbook.load_book(path))
+            except Exception as exc:
+                print(f"  WARNING: cannot read MEL book {path}: {exc}")
+        if not books:
+            print("MEL book pages: no MEL book given (--mel-book) - not attached")
+        else:
+            entries = melbook.item_pages(books, lookups, fp)
+            for entry in entries:
+                print(f"  MEL book 9Y-{entry.registration} {entry.note}")
+            attachments.append(melbook.pages_pdf(entries))
+    if wind_hours:
+        charts, errors = windcharts.fetch_charts()
+        for error in errors:
+            print(f"  WARNING: {error}")
+        hours = set(h for h in wind_hours if h != "auto")
+        if "auto" in wind_hours:
+            hours.update(windcharts.suggested_hours(charts, fp))
+        chosen = [c for c in charts if c.hour in hours]
+        print("Wind charts : " + (", ".join(c.label for c in chosen) or "none in force during the flight"))
+        if chosen:
+            attachments.append(windcharts.charts_pdf(chosen))
+
     remarks = flight_remarks(fp)
     print(f"NOTAMs: {len(remarks)} closure/outage item(s) added to the remarks")
     for remark in remarks:
@@ -108,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                           utc_offset_hours=settings.utc_offset_hours, dispatcher=settings.dispatcher, **kwargs)
     try:
         written = write_outputs(args.flight_plan, data, args.out or settings.output_dir or None,
-                                append=not args.no_append)
+                                append=not args.no_append, attachments=attachments)
     except OutputError as exc:
         print(exc, file=sys.stderr)
         return 1

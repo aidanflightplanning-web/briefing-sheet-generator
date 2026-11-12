@@ -1,4 +1,4 @@
-"""Remembered settings: attached MEL sheets and output options."""
+"""Remembered settings: attached MEL sheets and MEL books, output options."""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ def settings_path() -> Path:
 @dataclass
 class Settings:
     mel_paths: list[str] = field(default_factory=list)
+    mel_book_paths: list[str] = field(default_factory=list)   # MEL books (PDF), B737 and ATR
+    attach_mel_pages: bool = True      # add the MEL book pages of the open items
     utc_offset_hours: float = -4.0     # dispatch office local time (Trinidad, UTC-4)
     dispatcher: str = ""               # used only if the flight plan has no dispatcher line
     append_to_flight_plan: bool = True

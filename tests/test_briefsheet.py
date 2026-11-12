@@ -8,10 +8,10 @@ import io
 import unittest
 from datetime import date, datetime
 
-from briefsheet import flightplan, mel, render
+from briefsheet import flightplan, mel, melbook, render, windcharts
 from briefsheet.builder import BriefingData, build_briefing
 from briefsheet.notams import Notam, flight_remarks
-from briefsheet.output import output_names, package_pdf
+from briefsheet.output import combine, output_names, package_pdf
 from briefsheet.pdftext import extract_pages
 from briefsheet.taf import format_taf
 
@@ -269,6 +269,19 @@ class SyntheticBrief(unittest.TestCase):
         self.assertEqual(output_names("BWA012301TTPP_WITH_BRIEFSHEET.pdf"),
                          ("BWA012301TTPP_BRIEFSHEET.pdf", "BWA012301TTPP_WITH_BRIEFSHEET.pdf"))
 
+    def test_attachments_follow_the_sheet_and_are_replaced_next_time(self):
+        sheet = io.BytesIO()
+        render.render_briefing(self.data, sheet)
+        attachment = make_pdf([["MEL BOOK PAGE ONE"], ["MEL BOOK PAGE TWO"]], header=False)
+        with_attachments = combine(sheet.getvalue(), [attachment, None])
+        first = package_pdf(self.pdf, with_attachments)
+        texts = extract_pages(first)
+        self.assertEqual(len(texts), len(BRIEF) + 3)
+        self.assertIn("GATE POSITION", texts[len(BRIEF)])
+        self.assertIn("MEL BOOK PAGE TWO", texts[-1])
+        again = extract_pages(package_pdf(first, combine(sheet.getvalue())))   # attachments removed this time
+        self.assertEqual(len(again), len(BRIEF) + 1)
+
 
 class NotamScreening(unittest.TestCase):
     """Wording taken from real NOTAMs: what is a closure or outage, and what is not."""
@@ -392,6 +405,27 @@ class SyntheticMel(unittest.TestCase):
         chosen = mel.lookup(self.books, "ABC", date(2026, 10, 1), "30TH SEPTEMBER 2026")
         self.assertEqual(chosen.sheet.name, "30TH SEPTEMBER 2026")
 
+    def test_atr_layout_without_description_heading(self):
+        """The ATR workbook leaves the DESCRIPTION heading blank and calls the closure date CLRD DATE."""
+        import openpyxl
+
+        book = openpyxl.Workbook()
+        ws = book.active
+        ws.title = "11TH NOVEMBER 2026"
+        ws["A1"] = "ATR MEL STAT/CDL STATUS 11TH NOVEMBER 2026"
+        for col, text in enumerate(["ACFT", "MEL", "CAT", "ST", "EXP", "LP/SNG#/DWC", "AUTH", None,
+                                    "REPETITIVE MAINT ACTION", "CLOSURE CONF #", "CLRD DATE"], start=1):
+            ws.cell(3, col, text)
+        ws["A4"], ws["B4"], ws["C4"], ws["H4"] = "TTI", "30-60-01B", "C", "PROP DE-ICE FAULT LIGHT"
+        ws["B5"], ws["H5"], ws["J5"] = "25-36-01", "LAV SMOKE DETECTOR", "C01/TTI/261110"
+        ws.merge_cells("A4:A5")
+        buffer = io.BytesIO()
+        book.save(buffer)
+        books = [mel.load_workbook(buffer.getvalue(), name="NOVEMBER 2026 ATR MEL SHEET.xlsx")]
+        self.assertEqual(books[0].fleet, "ATR")
+        found = mel.lookup(books, "9Y-TTI", date(2026, 11, 11))
+        self.assertEqual([i.briefing_text for i in found.items], ["30-60-01B  PROP DE-ICE FAULT LIGHT"])
+
 
 def template_data() -> BriefingData:
     """The values on the Word template (Briefsheet.pdf)."""
@@ -452,6 +486,118 @@ class Rendering(unittest.TestCase):
             self.assertEqual(render.get_fonts(), render.Fonts("Helvetica", "Helvetica-Bold", "Helvetica-Bold"))
         finally:
             render._fonts, render._font_dirs, render._font_trees = saved
+
+
+def book_page(label: str, *lines: str) -> list:
+    """An MEL book page: the running header, then the body lines."""
+    return ["Caribbean Airlines", "B737-8 MINIMUM EQUIPMENT LIST (MEL)", f"Page {label}", *lines]
+
+
+MEL_BOOK = [
+    ["CARIBBEAN AIRLINES", "BOEING 737-8", "MINIMUM EQUIPMENT LIST"],
+    ["CROSS REFERENCE TABLE", "REGISTRATION", "9Y-ABC", "9Y-XYZ"],
+    book_page("TOC.21-1", "TABLE OF CONTENTS", "21-51-01 Pack .........................  21-1"),
+    book_page("21-1", "21-51-01 Pack", "Interval Installed Required Procedure", "C 2 1 (M) (O)",
+              "May be inoperative provided:", "MAINTENANCE (M) PROCEDURES"),
+    book_page("21-2", "OPERATIONS (O) PROCEDURES (Cont'd)", "1. Do not fly above FL250."),
+    book_page("21-3", "21-51-01", "21-51-01-01", "21-51-01-01A", "Pack Valve", "Interval Installed Required Procedure",
+              "C 2 1"),
+    book_page("21-4", "21-51-01", "21-51-01-01", "21-51-01-01B", "Pack Valve", "Interval Installed Required Procedure",
+              "C 2 1"),
+    book_page("21-5", "INTENTIONALLY", "BLANK"),
+    book_page("23-1", "23-24-02 Distress Tracking", "23-24-02A Inoperative (XYZ ONLY)",
+              "Interval Installed Required Procedure", "D 1 0"),
+    book_page("23-2", "23-31-01 Passenger Address", "Interval Installed Required Procedure", "C 1 0",
+              "May be inoperative. Refer to 21-51-01-01B for nothing in particular."),
+]
+
+
+class SyntheticMelBook(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.book = melbook.load_book(make_pdf(MEL_BOOK, header=False), name="B737 MEL.pdf")
+
+    def pages(self, number, reg=""):
+        found = self.book.find(number, reg)
+        return found.matched, [self.book.pages[[p.index for p in self.book.pages].index(i)].label
+                               for i in found.pages]
+
+    def test_book(self):
+        self.assertEqual((self.book.fleet, self.book.registrations), ("B737", {"ABC", "XYZ"}))
+
+    def test_item_with_its_continuation_and_sub_items(self):
+        self.assertEqual(self.pages("21-51-01"), ("21-51-01", ["21-1", "21-2", "21-3", "21-4"]))
+        self.assertEqual(self.pages("21-51-01-01b"), ("21-51-01-01B", ["21-4"]))
+        self.assertEqual(self.pages("21-51-01-01"), ("21-51-01-01", ["21-3", "21-4"]))
+
+    def test_unknown_number_falls_back_to_its_parent(self):
+        self.assertEqual(self.pages("21-51-01-01C"), ("21-51-01-01", ["21-3", "21-4"]))
+        self.assertEqual(self.pages("99-99-99"), ("", []))
+
+    def test_effectivity(self):
+        self.assertEqual(self.pages("23-24-02A", "XYZ"), ("23-24-02A", ["23-1"]))
+        self.assertEqual(self.pages("23-24-02A", "9Y-ABC"), ("", []))
+
+    def test_pages_for_the_open_items(self):
+        lookup = mel.MelLookup("ABC", [mel.MelItem("ABC", n, "C", None, None, "X")
+                                       for n in ("21-51-01-01A", "21-51-01", "88-00-01")], None, None, True)
+        lookup.sheet = object()   # found on an MEL sheet
+        entries = melbook.item_pages([self.book], [lookup])
+        self.assertEqual([e.note for e in entries],
+                         ["21-51-01-01A: page 21-3", "21-51-01: pages 21-1, 21-2, 21-3, 21-4",
+                          "88-00-01: not found in B737 MEL.pdf"])
+        self.assertEqual(len(extract_pages(melbook.pages_pdf(entries))), 4)   # each page once
+        self.assertEqual(melbook.fleet_of_type("AT76", "ATR72"), "ATR")
+        self.assertEqual(melbook.fleet_of_type("B38M", "B737"), "B737")
+
+
+class WindCharts(unittest.TestCase):
+    @staticmethod
+    def chart(hour, run=datetime(2026, 11, 11, 18, 0)):
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new("L", (60, 95), 255).save(buffer, format="GIF",
+                                            comment=f"ProdTime={run:%Y%m%d-%H%M}".encode())
+        image = buffer.getvalue()
+        return windcharts.WindChart(hour, windcharts.CHART_URL.format(hour=hour), image,
+                                    windcharts._run_time(image, None), datetime(2026, 11, 11, 22, 0))
+
+    def test_valid_time_from_the_model_run(self):
+        chart = self.chart(6)
+        self.assertEqual(chart.run, datetime(2026, 11, 11, 18, 0))
+        self.assertEqual(chart.label, "+06 h · VALID 0000Z THU 12 NOV")
+        self.assertEqual(windcharts._run_time(b"GIF89a", "Wed, 11 Nov 2026 21:40:17 GMT"),
+                         datetime(2026, 11, 11, 18, 0))
+
+    def test_charts_in_force_during_the_flight(self):
+        charts = [self.chart(h) for h in windcharts.HOURS]
+
+        class Leg:
+            def __init__(self, dep, arr):
+                self.departure, self.arrival = dep, arr
+
+        class Plan:
+            def __init__(self, *legs):
+                self.legs = list(legs)
+
+        # 0000Z chart covers 2100Z-0300Z, 0600Z chart 0300Z-0900Z
+        flight = Plan(Leg(datetime(2026, 11, 12, 1, 0), datetime(2026, 11, 12, 4, 0)))
+        self.assertEqual(windcharts.suggested_hours(charts, flight), [6, 12])
+        far = Plan(Leg(datetime(2026, 11, 14, 12, 0), datetime(2026, 11, 14, 13, 0)))
+        self.assertEqual(windcharts.suggested_hours(charts, far), [])
+        self.assertEqual(windcharts.suggested_hours(charts, Plan(Leg(None, None))), [])
+        mixed = charts[:1] + [self.chart(12, datetime(2026, 11, 12, 0, 0))]
+        self.assertTrue(windcharts.run_summary(mixed).startswith("Update in progress: +12 h"))
+
+    def test_letter_pages(self):
+        from pypdf import PdfReader
+
+        pdf = windcharts.charts_pdf([self.chart(6), self.chart(12)])
+        pages = PdfReader(io.BytesIO(pdf)).pages
+        self.assertEqual([(float(p.mediabox.width), float(p.mediabox.height)) for p in pages],
+                         [(612.0, 792.0)] * 2)
+        self.assertIn("VALID 0600Z THU 12 NOV", extract_pages(pdf)[1])
 
 
 if __name__ == "__main__":

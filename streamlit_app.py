@@ -4,8 +4,9 @@
 
 Upload the MEL status workbooks and the flight plan brief; every field except
 the gate position and the passenger loads is filled in automatically and can
-be reviewed before generating. Uploaded files are processed in memory for the
-current browser session only.
+be reviewed before generating. With the MEL books uploaded, the MEL pages of the
+open items are attached; wind charts (Area A, FL100) can be ticked at the bottom.
+Uploaded files are processed in memory for the current browser session only.
 """
 
 from __future__ import annotations
@@ -18,11 +19,11 @@ import pypdfium2 as pdfium
 import streamlit as st
 from PIL import Image
 
-from briefsheet import mel
+from briefsheet import mel, melbook, windcharts
 from briefsheet.builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from briefsheet.flightplan import FlightPlan, parse_flight_plan
 from briefsheet.notams import flight_remarks
-from briefsheet.output import output_names, package_pdf
+from briefsheet.output import combine, output_names, package_pdf
 from briefsheet.render import asset, render_briefing
 
 UTC_OFFSET_HOURS = -4.0  # dispatch office local time (Trinidad); dates the brief and picks the MEL sheet
@@ -71,6 +72,32 @@ def read_workbooks(files) -> list[mel.MelWorkbook]:
     return books
 
 
+def read_books(files) -> list[melbook.MelBook]:
+    """Index each uploaded MEL book once per session; forget removed ones."""
+    parsed = state.get("books", {})
+    current, books = {}, []
+    for upload in files:
+        data = upload.getvalue()
+        key = digest(data)
+        if key not in parsed:
+            try:
+                with st.spinner(f"Reading {upload.name}…"):
+                    parsed[key] = melbook.load_book(data, name=upload.name)
+            except Exception as exc:
+                st.error(f"Cannot read {upload.name}: {exc}")
+                continue
+        current[key] = parsed[key]
+        books.append(parsed[key])
+    state.books = current
+    return books
+
+
+@st.cache_data(ttl=300, show_spinner="Downloading the wind charts from aviationweather.gov…")
+def wind_charts() -> tuple[list[windcharts.WindChart], list[str], dict[int, bytes]]:
+    charts, errors = windcharts.fetch_charts()
+    return charts, errors, {c.hour: c.thumbnail(420) for c in charts}
+
+
 def read_flight_plan(upload) -> FlightPlan:
     """Parse the flight plan; a new flight plan resets every field."""
     data = upload.getvalue()
@@ -86,9 +113,26 @@ def read_flight_plan(upload) -> FlightPlan:
         state.gate = ""
         for i in range(len(fp.legs)):
             state[f"pax_{i}"] = ""
-        for stale in ("mel_sheet", "mel_key", "output"):
+        for stale in ("mel_sheet", "mel_key", "output", "wind_key"):
             state.pop(stale, None)
     return state.fp
+
+
+def book_status(books: list[melbook.MelBook], lookups: list[mel.MelLookup], fp: FlightPlan):
+    """MEL book pages for the open items (empty when switched off or there are none)."""
+    if not any(lk.items for lk in lookups):
+        return []
+    if not st.toggle("Attach the MEL book pages of open items", value=True, key="attach_pages"):
+        return []
+    if not books:
+        st.info("Upload the MEL books (PDF) in step 1 to attach the MEL pages of the open items.")
+        return []
+    entries = melbook.item_pages(books, lookups, fp)
+    count = len({(id(e.book), i) for e in entries for i in e.pages})
+    notes = "  \n".join(f"`{e.note}`" for e in entries)
+    (st.warning if any(not e.pages for e in entries) else st.success)(
+        f"MEL book pages attached: **{count}**  \n{notes}")
+    return entries
 
 
 def mel_status(books: list[mel.MelWorkbook], fp: FlightPlan, day) -> list[mel.MelLookup]:
@@ -162,8 +206,11 @@ st.caption("Upload the MEL sheets and the flight plan brief. Everything is fille
 col_mel, col_fp = st.columns(2, gap="large")
 mel_files = col_mel.file_uploader("**1 · MEL sheets** (B737 / ATR status workbooks)", type=["xlsx", "xlsm"],
                                   accept_multiple_files=True)
+book_files = col_mel.file_uploader("**MEL books** (B737 / ATR MEL, PDF – to attach the MEL pages of open items)",
+                                   type=["pdf"], accept_multiple_files=True)
 fp_file = col_fp.file_uploader("**2 · Flight plan brief** (PDF)", type=["pdf"])
 books = read_workbooks(mel_files or [])
+mel_books = read_books(book_files or [])
 if fp_file is None:
     st.info("Upload a flight plan brief to start.")
     st.stop()
@@ -187,6 +234,7 @@ with st.container(border=True):
             st.warning(warning)
     with right:
         lookups = mel_status(books, fp, day)
+        book_pages = book_status(mel_books, lookups, fp)
 
 mel_key = (tuple(sorted(state.workbooks)), state.get("mel_sheet"), state.fp_key)
 if state.get("mel_key") != mel_key or "f_mel_items" not in state:
@@ -213,7 +261,38 @@ for names, widths in ((("aircraft_reg", "flight_no", "cargo", "route"), (1, 1, 1
     for column, name in zip(st.columns(widths), names):
         field(column, name)
 
-st.subheader("5 · Generate")
+st.subheader("5 · Wind charts")
+st.caption(f"{windcharts.AREA}, {windcharts.LEVEL}, from [aviationweather.gov]({windcharts.PAGE_URL}). "
+           "Ticked charts are attached as US Letter pages. For B737 flights the charts in force during the "
+           "flight are ticked.")
+charts, chart_errors, thumbs = wind_charts()
+for error in chart_errors:
+    st.warning(error)
+if charts:
+    b737 = any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737" for leg in fp.legs)
+    wind_key = (state.fp_key, tuple((c.hour, c.run) for c in charts))
+    if state.get("wind_key") != wind_key:
+        suggested = set(windcharts.suggested_hours(charts, fp)) if b737 else set()
+        for chart in charts:
+            state[f"wind_{chart.hour}"] = chart.hour in suggested
+        state.wind_key = wind_key
+    runs = windcharts.run_summary(charts)
+    (st.warning if runs.startswith("Update") else st.caption)(
+        f"{runs} · downloaded {charts[0].retrieved:%H%MZ}")
+    for column, chart in zip(st.columns(len(charts)), charts):
+        ensure(f"wind_{chart.hour}", False)
+        column.image(thumbs[chart.hour], width="stretch")
+        valid = f"{chart.valid:%H%MZ %a %d %b}".upper() if chart.valid else "valid time unknown"
+        column.checkbox(f"+{chart.hour:02d} h · {valid}", key=f"wind_{chart.hour}")
+        column.markdown(f"[Full size]({chart.url})")
+elif not chart_errors:
+    st.info("No wind charts available.")
+if st.button("Refresh wind charts", icon=":material/refresh:"):
+    wind_charts.clear()
+    st.rerun()
+selected_charts = [c for c in charts if state.get(f"wind_{c.hour}")]
+
+st.subheader("6 · Generate")
 data = collect(fp)
 blank = ([] if state.get("gate", "").strip() else ["gate position"]) + [
     f"PAX load {leg.flight} {leg.sector}" for i, leg in enumerate(fp.legs) if not state.get(f"pax_{i}", "").strip()]
@@ -225,14 +304,22 @@ if not books:
 elif unchecked and not data.mel_items.strip():
     st.warning(f"9Y-{', 9Y-'.join(unchecked)} was not found in the MEL sheets and the M.E.L items box is empty.")
 
-signature = digest(repr(sorted(asdict(data).items())).encode())
+book_page_keys = [(e.book.name, i) for e in book_pages for i in e.pages]
+chart_keys = [(c.hour, c.run) for c in selected_charts]
+signature = digest(repr((sorted(asdict(data).items()), book_page_keys, chart_keys)).encode())
 if st.button("Generate briefing sheet", type="primary", disabled=not books, width="stretch"):
     with st.spinner("Generating…"):
         buffer = io.BytesIO()
         render_briefing(data, buffer)
-        sheet = buffer.getvalue()
+        attachments = [melbook.pages_pdf(book_pages) if book_pages else None,
+                       windcharts.charts_pdf(selected_charts) if selected_charts else None]
+        sheet = combine(buffer.getvalue(), attachments)
+        added = ([f"{len(set(book_page_keys))} MEL book page{'s' if len(set(book_page_keys)) != 1 else ''}"]
+                 if book_page_keys else []) + \
+                ([f"{len(selected_charts)} wind chart{'s' if len(selected_charts) != 1 else ''}"]
+                 if selected_charts else [])
         state.output = {"signature": signature, "sheet": sheet, "package": package_pdf(state.fp_bytes, sheet),
-                        "previews": previews(sheet)}
+                        "previews": previews(buffer.getvalue()), "added": added}
 
 output = state.get("output")
 if output and output["signature"] == signature:
@@ -242,6 +329,9 @@ if output and output["signature"] == signature:
                           type="primary", icon=":material/download:", width="stretch", on_click="ignore")
     second.download_button("Download flight plan + briefing sheet", output["package"], file_name=package_name,
                            mime="application/pdf", icon=":material/download:", width="stretch", on_click="ignore")
+    if output.get("added"):
+        st.caption("Attached after the briefing sheet: " + " and ".join(output["added"]) +
+                   " (in both downloads; not shown in the preview below).")
     _, middle, _ = st.columns([1, 4, 1])
     for page in output["previews"]:
         middle.image(page, width="stretch")

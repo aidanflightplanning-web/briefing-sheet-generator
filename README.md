@@ -9,16 +9,26 @@ Only the **gate position** and the **passenger load of each leg** are entered by
 Everything else comes from the flight plan and the MEL sheet. B737 and ATR flight plans
 are supported, including packages that cover a whole rotation (several legs).
 
+Two attachments can follow the briefing sheet:
+
+- the **MEL book pages** of the aircraft's open MEL items (can be switched off), and
+- **wind/temperature charts** (Area A, FL100) from aviationweather.gov, ticked at the
+  bottom of the screen, as US Letter pages.
+
 It runs as a **web app** (Streamlit) or as a **Windows desktop app**. No flight plans or
 MEL workbooks are stored in this repository or by the web app.
 
 ## Web app
 
-1. Upload the **MEL sheets** (B737 and/or ATR workbooks).
+1. Upload the **MEL sheets** (B737 and/or ATR workbooks) and, to attach the MEL pages,
+   the **MEL books** (B737-8 and ATR 72-600 MEL, PDF).
 2. Upload the **flight plan brief** (PDF). All fields are filled in.
 3. Enter the **gate** and the **PAX load (C/Y)** for each leg.
-4. Check the review section (every field can be edited), then **Generate briefing sheet**.
-5. Download the briefing sheet, or the flight plan with the sheet appended at the end.
+4. Check the review section (every field can be edited).
+5. Tick the **wind charts** to attach (for a B737 flight the charts in force during the
+   flight are already ticked), then **Generate briefing sheet**.
+6. Download the briefing sheet, or the flight plan with the sheet appended at the end.
+   Both contain the attachments after the sheet.
 
 Uploaded files are processed in memory for the browser session and are not saved.
 
@@ -34,9 +44,14 @@ which have the same character widths as Arial and Calibri, so the layout matches
 ## Desktop app (Windows)
 
 Double-click `Briefing Sheet Generator.pyw` (or drop a flight plan PDF on it). The MEL
-sheets you attach are remembered. Two files are saved next to the flight plan:
-`<flight plan>_BRIEFSHEET.pdf` and `<flight plan>_WITH_BRIEFSHEET.pdf` (a briefing sheet
-already attached to the flight plan is replaced).
+sheets and MEL books you attach (**Attach MEL sheets / MEL books…**, Excel or PDF) are
+remembered, and so is the **Attach the MEL book pages of open items** switch. The wind
+charts are downloaded when the window opens and shown along the bottom; click one to
+view it full size, tick the ones to attach, **Refresh** for the latest.
+
+Two files are saved next to the flight plan: `<flight plan>_BRIEFSHEET.pdf` and
+`<flight plan>_WITH_BRIEFSHEET.pdf`. Both have the attachments after the sheet. A
+briefing sheet and attachments added to the flight plan earlier are replaced.
 
 `build_exe.bat` builds `dist\Briefing Sheet Generator.exe` (about 30 MB, single file) that
 runs on PCs without Python. It needs PyInstaller.
@@ -45,10 +60,12 @@ runs on PCs without Python. It needs PyInstaller.
 
 ```
 briefsheet.bat FLIGHTPLAN.pdf --mel "B737 MEL SHEET.xlsx" --mel "ATR MEL SHEET.xlsx" --save-mel
-briefsheet.bat FLIGHTPLAN.pdf --gate 13 --pax 2/11 --pax 15/144
+briefsheet.bat FLIGHTPLAN.pdf --mel-book "B737-8 MEL.pdf" --mel-book "ATR MEL.pdf" --save-mel
+briefsheet.bat FLIGHTPLAN.pdf --gate 13 --pax 2/11 --pax 15/144 --wind auto
 ```
 
-Other options: `--cargo`, `--route`, `--mel-sheet "26TH SEPTEMBER 2026"`, `--out FOLDER`, `--no-append`.
+Other options: `--cargo`, `--route`, `--mel-sheet "26TH SEPTEMBER 2026"`, `--out FOLDER`, `--no-append`,
+`--no-mel-pages`, `--wind 6 --wind 12` (forecast hours of the charts to attach).
 Desktop settings are stored in `%APPDATA%\BriefingSheetGenerator\settings.json`.
 
 ## Where each field comes from
@@ -83,6 +100,38 @@ indented 2 spaces, `TEMPO` groups are indented 4 spaces.
   ("ENTIRE ROW OF CLEARED ITEMS").
 - If the aircraft is not on any MEL sheet, the M.E.L box is left empty with a warning.
   `NIL REPORTED` is only printed after the aircraft was actually checked.
+
+### MEL book pages
+
+When an aircraft has open MEL items, the pages of those items are copied from the MEL
+book and attached after the briefing sheet, in the order of the MEL sheet.
+
+- **Which book:** the one whose cross-reference table lists the aircraft (9Y-GUY in the
+  B737-8 MEL, 9Y-TTI in the ATR MEL), otherwise the one for the aircraft type in the flight
+  plan (B38M → B737-8, AT76 → ATR 72-600).
+- **Which pages:** every page of the item, including its "(Cont'd)" procedure pages.
+  `23-11-01` gives all pages of 23-11-01 and its sub-items; `73-15-01C` gives only the
+  page that shows 73-15-01C. A number that is not in the book falls back to its parent
+  item (`74-00-01-01B` → `74-00-01-01`) and the note says so. Tables of contents and
+  blank pages are never attached.
+- **Effectivity:** sub-items marked for other aircraft only, such as `(CUB ONLY)`, are
+  left out.
+- The status panel lists the pages found for each item (`38-30-01: pages 38-30.1,
+  38-30.2, 38-30.3`). A number that cannot be found, usually a typing error on the MEL
+  sheet, is shown as a warning and nothing is attached for it.
+
+### Wind charts
+
+The WAFC wind/temperature charts for **Area A – 65N-50S 120W-25W (Americas), FL100** are
+downloaded from [aviationweather.gov/fax](https://aviationweather.gov/fax/): the six
+forecasts from +06 h to +36 h of the latest model run. Each chart is labelled with its
+valid time (taken from the chart file) and is in force for three hours either side of it.
+
+For a B737 flight the charts in force between the first departure and the last arrival
+are ticked; for an ATR flight none are. Tick or untick as needed. Each ticked chart is
+attached as a US Letter page, scaled to fit, with a source line. While the AWC is
+publishing a new run the charts can come from two runs; a note says so and **Refresh**
+gets the full set later.
 
 ### NOTAM screening
 
@@ -125,7 +174,9 @@ leg's times or the NOTAM pages cannot be read, a warning is shown instead of an 
 - TAFs and SIGMETs are taken from the flight plan brief, which is what the crew receives.
   They can differ from weather pulled from other sources after the brief was generated.
 - NOTAMs are those in the brief; anything issued after the brief was generated is not seen.
-- MEL manual pages are not added to the sheet.
+- MEL book pages are found by their item numbers. Check the attached pages against the
+  MEL items, in particular when a note says a parent item was used.
+- Wind charts need an internet connection to aviationweather.gov at the time of use.
 
 ## Development
 
@@ -136,9 +187,9 @@ python -m unittest -v
 ```
 
 `tests/test_briefsheet.py` builds a small flight plan brief and MEL workbook in memory, so
-it runs anywhere. Checks against real flight plans (`tests/test_local_examples.py`) need
-operational data and are kept out of the repository by `.gitignore`, together with all
-PDF and Excel files.
+it runs anywhere (with a small MEL book and wind chart). Checks against real flight plans
+and MEL books (`tests/test_local_examples.py`) need operational data and are kept out of
+the repository by `.gitignore`, together with all PDF and Excel files.
 
 | Path | Purpose |
 |---|---|
@@ -147,7 +198,9 @@ PDF and Excel files.
 | `briefsheet/cli.py` | Command line |
 | `briefsheet/flightplan.py` | Reads the flight plan brief |
 | `briefsheet/mel.py` | Reads the MEL workbooks |
+| `briefsheet/melbook.py` | Finds the pages of an MEL item in the MEL book |
+| `briefsheet/windcharts.py` | Downloads the wind charts, makes the Letter pages |
 | `briefsheet/notams.py` | Reads the NOTAM pages and picks the closures and outages |
 | `briefsheet/builder.py` | Fills in the fields |
 | `briefsheet/render.py` | Draws the SOC001 form |
-| `briefsheet/output.py` | Output files, flight plan + sheet package |
+| `briefsheet/output.py` | Output files, attachments, flight plan + sheet package |

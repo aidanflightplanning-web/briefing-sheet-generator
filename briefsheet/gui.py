@@ -1,22 +1,28 @@
 """Window for generating the Flight Crew Briefing Sheet.
 
-1. Attach the MEL sheets (remembered between sessions).
+1. Attach the MEL sheets and the MEL books (remembered between sessions).
 2. Open the flight plan PDF - every field is filled in from it and the MEL sheet.
 3. Enter the gate position and the passenger load of each leg.
-4. Review/edit the filled-in fields if needed, then Generate.
+4. Review/edit the filled-in fields if needed.
+5. Tick the wind charts to attach (B737: the charts in force during the flight are ticked), then Generate.
 """
 
 from __future__ import annotations
 
+import io
 import os
+import queue
 import subprocess
 import sys
+import tempfile
+import threading
 import tkinter as tk
 import traceback
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import mel as melmod
+from . import melbook, windcharts
 from .builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from .flightplan import FlightPlan, parse_flight_plan
 from .notams import flight_remarks
@@ -50,8 +56,9 @@ class App(tk.Tk):
     def __init__(self, flight_plan: str | None = None):
         super().__init__()
         self.title("Flight Crew Briefing Sheet Generator")
-        self.geometry("1220x820")
-        self.minsize(1000, 640)
+        height = max(700, min(900, self.winfo_screenheight() - 90))   # fit above the taskbar
+        self.geometry(f"1260x{height}+{max(0, (self.winfo_screenwidth() - 1260) // 2)}+10")
+        self.minsize(1040, 700)
         try:
             self.iconbitmap(default=str(asset("icon.ico")))
         except tk.TclError:  # .ico icons are Windows-only
@@ -60,7 +67,14 @@ class App(tk.Tk):
         self.fp: FlightPlan | None = None
         self.fp_path: Path | None = None
         self.workbooks: list[melmod.MelWorkbook] = []
+        self.books: list[melbook.MelBook] = []
         self.lookups: list[melmod.MelLookup] = []
+        self.book_pages: list[melbook.ItemPages] = []
+        self.charts: list[windcharts.WindChart] = []
+        self.chart_vars: dict[int, tk.BooleanVar] = {}
+        self.chart_images: list = []          # keeps the Tk thumbnails alive
+        self.chart_queue: queue.Queue = queue.Queue()
+        self.chart_loading = False
         self.pax_vars: list[tk.StringVar] = []
         self.pax_entries: list[ttk.Entry] = []
         self.fields: dict[str, tk.Text] = {}
@@ -70,6 +84,7 @@ class App(tk.Tk):
         self._style()
         self._build()
         self._reload_mel()
+        self.refresh_charts()
         self.bind_all("<Control-o>", lambda e: self.open_flight_plan())
         self.bind_all("<Control-g>", lambda e: self.generate())
         self.bind_all("<MouseWheel>", self._on_wheel)
@@ -90,20 +105,24 @@ class App(tk.Tk):
         root.pack(fill="both", expand=True)
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
+        self._build_charts(root)
 
         left = ttk.Frame(root, width=390)
-        left.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
+        left.grid(row=0, column=0, rowspan=2, sticky="nsw", padx=(0, 10))
         left.columnconfigure(0, weight=1)
 
-        # 1. MEL sheets
-        box = ttk.LabelFrame(left, text=" 1  MEL sheets ", style="Step.TLabelframe", padding=8)
+        # 1. MEL sheets and MEL books
+        box = ttk.LabelFrame(left, text=" 1  MEL sheets and MEL books ", style="Step.TLabelframe", padding=8)
         box.grid(row=0, column=0, sticky="ew")
         box.columnconfigure(0, weight=1)
-        self.mel_list = tk.Listbox(box, height=4, activestyle="none", font=("Segoe UI", 9))
+        self.mel_list = tk.Listbox(box, height=5, activestyle="none", font=("Segoe UI", 9), selectmode="extended")
         self.mel_list.grid(row=0, column=0, columnspan=2, sticky="ew")
-        ttk.Button(box, text="Attach MEL sheet(s)…", command=self.attach_mel).grid(
+        ttk.Button(box, text="Attach MEL sheets / MEL books…", command=self.attach_mel).grid(
             row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Button(box, text="Remove", command=self.remove_mel).grid(row=1, column=1, sticky="e", pady=(6, 0))
+        self.pages_var = tk.BooleanVar(value=self.settings.attach_mel_pages)
+        ttk.Checkbutton(box, text="Attach the MEL book pages of open items", variable=self.pages_var,
+                        command=self._toggle_pages).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
         # 2. Flight plan
         box = ttk.LabelFrame(left, text=" 2  Flight plan ", style="Step.TLabelframe", padding=8)
@@ -188,6 +207,99 @@ class App(tk.Tk):
             self.fields[key] = text
             text._min_lines = lines  # noqa: SLF001 - used by _autosize
 
+    def _build_charts(self, root):
+        box = ttk.LabelFrame(root, text=f" 5  Wind charts – {windcharts.AREA}, {windcharts.LEVEL} "
+                                        "(ticked charts are attached) ", style="Step.TLabelframe", padding=(8, 4))
+        box.grid(row=1, column=1, sticky="ew", pady=(10, 0))
+        box.columnconfigure(0, weight=1)
+        self.chart_strip = ttk.Frame(box)
+        self.chart_strip.grid(row=0, column=0, sticky="w")
+        side = ttk.Frame(box)
+        side.grid(row=0, column=1, sticky="ne", padx=(10, 0))
+        ttk.Button(side, text="Refresh", command=self.refresh_charts).grid(row=0, column=0, sticky="e")
+        self.chart_status = ttk.Label(side, text="", foreground=MUTED, wraplength=190, justify="right")
+        self.chart_status.grid(row=1, column=0, sticky="e", pady=(6, 0))
+
+    # wind charts ---------------------------------------------------------------
+    def refresh_charts(self):
+        if self.chart_loading:
+            return
+        self.chart_loading = True
+        self.chart_status.configure(text="Downloading from aviationweather.gov…", foreground=MUTED)
+
+        def work():
+            try:
+                self.chart_queue.put(windcharts.fetch_charts())
+            except Exception as exc:  # never let the thread die silently
+                self.chart_queue.put(([], [str(exc)]))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.after(200, self._poll_charts)
+
+    def _poll_charts(self):
+        try:
+            charts, errors = self.chart_queue.get_nowait()
+        except queue.Empty:
+            self.after(200, self._poll_charts)
+            return
+        self.chart_loading = False
+        ticked = {h for h, var in self.chart_vars.items() if var.get()}
+        self.charts = charts
+        self._show_charts(ticked if self.chart_vars else None)
+        if errors and not charts:
+            self.chart_status.configure(text="Could not download the wind charts – check the internet "
+                                             "connection and press Refresh.", foreground=ERROR)
+        elif errors:
+            self.chart_status.configure(text="\n".join(errors), foreground=WARN)
+        else:
+            runs = windcharts.run_summary(charts)
+            self.chart_status.configure(
+                text=runs + f"\nDownloaded {charts[0].retrieved:%H%MZ}" + "\nClick a chart to view it",
+                foreground=WARN if runs.startswith("Update") else MUTED)
+
+    def _show_charts(self, ticked: set[int] | None = None):
+        from PIL import Image, ImageTk
+
+        for child in self.chart_strip.winfo_children():
+            child.destroy()
+        self.chart_images, self.chart_vars = [], {}
+        if ticked is None:
+            ticked = set(self._suggested_hours())
+        for col, chart in enumerate(self.charts):
+            frame = ttk.Frame(self.chart_strip, padding=(0, 0, 10, 0))
+            frame.grid(row=0, column=col, sticky="n")
+            with Image.open(io.BytesIO(chart.image)) as im:
+                im = im.convert("L")
+                im.thumbnail((76, 120))
+                photo = ImageTk.PhotoImage(im)
+            self.chart_images.append(photo)
+            thumb = tk.Label(frame, image=photo, borderwidth=1, relief="solid", cursor="hand2")
+            thumb.grid(row=0, column=0)
+            thumb.bind("<Button-1>", lambda e, c=chart: self._view_chart(c))
+            var = tk.BooleanVar(value=chart.hour in ticked)
+            self.chart_vars[chart.hour] = var
+            valid = chart.valid
+            text = f"+{chart.hour:02d} h\n" + (f"{valid:%H%MZ %a %d}".upper() if valid else "valid ?")
+            ttk.Checkbutton(frame, text=text, variable=var).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+    def _suggested_hours(self) -> list[int]:
+        if not self.fp or not any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737"
+                                  for leg in self.fp.legs):
+            return []
+        return windcharts.suggested_hours(self.charts, self.fp)
+
+    def _view_chart(self, chart: windcharts.WindChart):
+        path = Path(tempfile.gettempdir()) / f"BriefingSheet_wind_F{chart.hour:02d}_{windcharts.LEVEL}_A.gif"
+        try:
+            path.write_bytes(chart.image)
+        except OSError as exc:
+            messagebox.showwarning("Wind chart", f"Could not save the chart to view it:\n{exc}", parent=self)
+            return
+        self._open(path)
+
+    def _selected_charts(self) -> list[windcharts.WindChart]:
+        return [c for c in self.charts if self.chart_vars.get(c.hour) and self.chart_vars[c.hour].get()]
+
     # helpers ------------------------------------------------------------------
     def _on_wheel(self, event):
         widget = self.winfo_containing(event.x_root, event.y_root)
@@ -219,25 +331,36 @@ class App(tk.Tk):
     # MEL sheets ---------------------------------------------------------------
     def attach_mel(self):
         paths = filedialog.askopenfilenames(
-            parent=self, title="Attach MEL sheet(s)",
-            filetypes=[("Excel workbooks", "*.xlsx *.xlsm"), ("All files", "*.*")],
+            parent=self, title="Attach MEL sheets (Excel) and MEL books (PDF)",
+            filetypes=[("MEL sheets and MEL books", "*.xlsx *.xlsm *.pdf"), ("Excel workbooks", "*.xlsx *.xlsm"),
+                       ("MEL books (PDF)", "*.pdf"), ("All files", "*.*")],
             initialdir=self.settings.last_folder or None)
         added = False
         for p in paths:
             p = str(Path(p))
-            if p not in self.settings.mel_paths:
-                self.settings.mel_paths.append(p)
+            target = self.settings.mel_book_paths if p.lower().endswith(".pdf") else self.settings.mel_paths
+            if p not in target:
+                target.append(p)
                 added = True
         if added:
             self.settings.save()
             self._reload_mel()
 
     def remove_mel(self):
-        for index in reversed(self.mel_list.curselection()):
-            if index < len(self.settings.mel_paths):
-                del self.settings.mel_paths[index]
+        sheets, books = len(self.settings.mel_paths), len(self.settings.mel_book_paths)
+        chosen = set(self.mel_list.curselection())
+        self.settings.mel_paths = [p for i, p in enumerate(self.settings.mel_paths) if i not in chosen]
+        self.settings.mel_book_paths = [p for i, p in enumerate(self.settings.mel_book_paths, start=sheets)
+                                        if i not in chosen]
+        if len(self.settings.mel_paths) + len(self.settings.mel_book_paths) != sheets + books:
+            self.settings.save()
+            self._reload_mel()
+
+    def _toggle_pages(self):
+        self.settings.attach_mel_pages = self.pages_var.get()
         self.settings.save()
-        self._reload_mel()
+        if self.fp:
+            self._update_mel(self.sheet_var.get() or None)
 
     def _reload_mel(self):
         self.config(cursor="watch")
@@ -255,7 +378,17 @@ class App(tk.Tk):
             dated = [s.date for s in wb.sheets if s.date]
             span = f"{min(dated):%d}–{max(dated):%d %b %Y}" if dated else f"{len(wb.sheets)} sheets"
             self.mel_list.insert("end", f"✓ {wb.fleet or 'MEL'}  {span}  –  {wb.path.name}")
-        if not self.settings.mel_paths:
+        self.books = []
+        for path in self.settings.mel_book_paths:
+            try:
+                book = melbook.load_book(path)
+            except Exception as exc:
+                self.mel_list.insert("end", f"✗ {Path(path).name}  – cannot read ({exc.__class__.__name__})")
+                self.mel_list.itemconfigure("end", foreground=ERROR)
+                continue
+            self.books.append(book)
+            self.mel_list.insert("end", f"✓ {book.fleet or 'MEL'} MEL book  {book.page_count} pages  –  {book.name}")
+        if not self.settings.mel_paths and not self.settings.mel_book_paths:
             self.mel_list.insert("end", "No MEL sheets attached")
             self.mel_list.itemconfigure(0, foreground=MUTED)
         self.config(cursor="")
@@ -284,6 +417,17 @@ class App(tk.Tk):
                 if not lk.exact_date and not sheet_name:
                     lines.append(f"No sheet for {day:%d/%m/%y} – the latest earlier sheet was used.")
                     color = WARN if color == OK else color
+            self.book_pages = []
+            if self.pages_var.get() and any(lk.items for lk in self.lookups):
+                if not self.books:
+                    lines.append("MEL book pages: attach the MEL books (PDF) to add them.")
+                    color = WARN if color == OK else color
+                else:
+                    self.book_pages = melbook.item_pages(self.books, self.lookups, fp)
+                    lines.append(f"MEL book pages attached: {self._book_page_count()}")
+                    lines.extend(f"  {e.note}" for e in self.book_pages)
+                    if any(not e.pages for e in self.book_pages):
+                        color = WARN if color == OK else color
             self.mel_status.configure(text="\n".join(lines), foreground=color)
         first = next((lk for lk in self.lookups if lk.found), None)
         if first:
@@ -292,6 +436,9 @@ class App(tk.Tk):
         else:
             self.sheet_combo.configure(values=[], state="disabled")
             self.sheet_var.set("")
+
+    def _book_page_count(self) -> int:
+        return len({(id(e.book), i) for e in self.book_pages for i in e.pages})
 
     # flight plan --------------------------------------------------------------
     def open_flight_plan(self):
@@ -347,6 +494,8 @@ class App(tk.Tk):
         for name, var in self.checks.items():
             var.set(data.checklist.get(name, False))
         self._update_mel()
+        if self.charts:
+            self._show_charts()
         self.gate_var.set("")
         self.folder_button.grid_remove()
         self._set_status("Enter the gate position and passenger loads, then Generate.")
@@ -391,9 +540,15 @@ class App(tk.Tk):
         self.settings.save()
         self.config(cursor="watch")
         self.update_idletasks()
+        charts = self._selected_charts()
         try:
+            attachments = []
+            if self.pages_var.get() and self.book_pages:
+                attachments.append(melbook.pages_pdf(self.book_pages))
+            if charts:
+                attachments.append(windcharts.charts_pdf(charts))
             written = write_outputs(self.fp_path, data, self.settings.output_dir or None,
-                                    append=self.append_var.get())
+                                    append=self.append_var.get(), attachments=attachments)
         except OutputError as exc:
             messagebox.showerror("Briefing sheet", str(exc), parent=self)
             return
@@ -404,7 +559,10 @@ class App(tk.Tk):
         finally:
             self.config(cursor="")
         self.last_written = written
-        self._set_status("Saved:\n" + "\n".join(p.name for p in written) + f"\nin {written[0].parent}", OK)
+        extras = ([f"MEL book pages: {self._book_page_count()}"] if self.pages_var.get() and self.book_pages
+                  else []) + ([f"Wind charts: {', '.join(f'+{c.hour:02d} h' for c in charts)}"] if charts else [])
+        self._set_status("Saved:\n" + "\n".join(p.name for p in written) + f"\nin {written[0].parent}" +
+                         "".join(f"\n{e}" for e in extras), OK)
         self.folder_button.grid(row=4, column=0, sticky="w", pady=(4, 0))
         if self.open_var.get():
             self._open(written[0])

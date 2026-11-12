@@ -12,6 +12,7 @@ py -m PyInstaller --noconfirm --onefile --windowed --name "Briefing Sheet Genera
     --exclude-module numpy --exclude-module pandas --exclude-module matplotlib --exclude-module scipy ^
     --exclude-module PyQt6 --exclude-module streamlit --exclude-module pyarrow --exclude-module sklearn ^
     --exclude-module statsmodels --exclude-module pdfplumber --exclude-module IPython ^
+    --hidden-import PIL.ImageTk ^
     "%~dp0Briefing Sheet Generator.pyw"
 if errorlevel 1 (
     echo.

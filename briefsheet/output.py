@@ -1,4 +1,9 @@
-"""Writes the briefing sheet PDF and the flight plan package with the sheet appended."""
+"""Writes the briefing sheet PDF and the flight plan package with the sheet appended.
+
+Attachments (the MEL book pages of the open items, wind charts) follow the briefing
+sheet in both files. Every page added here is tagged, so when a package is opened
+again only the flight plan pages are kept and the sheet and attachments are replaced.
+"""
 
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from .pdftext import extract_pages
 from .render import render_briefing
 
 SUFFIXES = ("_WITH_BRIEFSHEET", "_BRIEFSHEET")
+ADDED_PAGE_KEY = "/BriefingSheetGenerator"   # marks pages this program added
 
 
 class OutputError(OSError):
@@ -36,22 +42,44 @@ def output_paths(flight_plan: str | Path, output_dir: str | Path | None = None) 
     return folder / sheet, folder / package
 
 
-def package_pdf(flight_plan: str | Path | bytes, briefsheet: str | Path | bytes) -> bytes:
-    """Flight plan pages followed by the briefing sheet; a sheet attached earlier is replaced."""
-    from pypdf import PdfReader, PdfWriter
+def _reader(source):
+    from pypdf import PdfReader
 
-    def reader(source):
-        return PdfReader(io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else str(source))
+    return PdfReader(io.BytesIO(source) if isinstance(source, (bytes, bytearray)) else str(source))
 
-    writer = PdfWriter()
-    for text, page in zip(extract_pages(flight_plan), reader(flight_plan).pages):
-        if not BRIEFSHEET_PAGE_RE.search(text):
-            writer.add_page(page)
-    for page in reader(briefsheet).pages:
-        writer.add_page(page)
+
+def _write(writer) -> bytes:
     buffer = io.BytesIO()
     writer.write(buffer)
     return buffer.getvalue()
+
+
+def combine(briefsheet: bytes, attachments=()) -> bytes:
+    """The briefing sheet followed by the attachments (PDF bytes; empty ones are skipped)."""
+    from pypdf import PdfWriter
+    from pypdf.generic import BooleanObject, NameObject
+
+    writer = PdfWriter()
+    for source in (briefsheet, *attachments):
+        if not source:
+            continue
+        for page in _reader(source).pages:
+            writer.add_page(page)[NameObject(ADDED_PAGE_KEY)] = BooleanObject(True)
+    return _write(writer)
+
+
+def package_pdf(flight_plan: str | Path | bytes, briefsheet: str | Path | bytes) -> bytes:
+    """Flight plan pages followed by the briefing sheet (and its attachments); a sheet and
+    attachments added earlier are replaced."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for text, page in zip(extract_pages(flight_plan), _reader(flight_plan).pages):
+        if not BRIEFSHEET_PAGE_RE.search(text) and ADDED_PAGE_KEY not in page:
+            writer.add_page(page)
+    for page in _reader(briefsheet).pages:
+        writer.add_page(page)
+    return _write(writer)
 
 
 def _replace(tmp: Path, target: Path) -> None:
@@ -70,13 +98,16 @@ def append_to_flight_plan(flight_plan: Path, briefsheet: Path, target: Path) -> 
 
 
 def write_outputs(flight_plan: str | Path, data: BriefingData, output_dir: str | Path | None = None,
-                  append: bool = True) -> list[Path]:
-    """Render the briefing sheet (and optionally the combined package). Returns the files written."""
+                  append: bool = True, attachments=()) -> list[Path]:
+    """Render the briefing sheet with its attachments (and optionally the combined package).
+    Returns the files written."""
     sheet_path, package_path = output_paths(flight_plan, output_dir)
     sheet_path.parent.mkdir(parents=True, exist_ok=True)
+    buffer = io.BytesIO()
+    render_briefing(data, buffer)
     fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=sheet_path.parent)
-    os.close(fd)
-    render_briefing(data, tmp)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(combine(buffer.getvalue(), attachments))
     _replace(Path(tmp), sheet_path)
     written = [sheet_path]
     if append:

@@ -145,9 +145,17 @@ def _find_header(ws) -> tuple[int, dict[str, int]] | None:
     for r in range(1, min(ws.max_row, 15) + 1):
         labels = {c: _text(ws.cell(r, c).value).upper() for c in range(1, min(ws.max_column, 30) + 1)}
         mel_col = next((c for c, t in labels.items() if t in ("MEL", "MEL #", "MEL NO", "MEL/CDL")), None)
-        desc_col = next((c for c, t in labels.items() if t.startswith("DESCRIPTION")), None)
-        if not (mel_col and desc_col):
+        known = sum(t in ("CAT", "CAT.", "ST", "EXP", "AUTH", "LP/SNG#/DWC") or t.startswith("DESCRIPTION")
+                    for t in labels.values())
+        if not mel_col or known < 2:
             continue
+        desc_col = next((c for c, t in labels.items() if t.startswith("DESCRIPTION")), None)
+        if desc_col is None:
+            # Some workbooks leave the DESCRIPTION heading blank: it is the unlabelled column after AUTH.
+            auth = next((c for c, t in labels.items() if t == "AUTH"), mel_col)
+            desc_col = next((c for c in range(auth + 1, max(labels) + 1) if not labels.get(c)), None)
+            if desc_col is None:
+                continue
         cols = {"mel": mel_col, "desc": desc_col}
         cols["acft"] = next((c for c, t in labels.items() if t in ("ACFT", "A/C", "AIRCRAFT", "REG")), 1)
         cols["cat"] = next((c for c, t in labels.items() if t in ("CAT", "CAT.")), 0)
