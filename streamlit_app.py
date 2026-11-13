@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import sys
 import urllib.request
 import zipfile
 from dataclasses import asdict
@@ -25,12 +26,30 @@ import pypdfium2 as pdfium
 import streamlit as st
 from PIL import Image
 
-from briefsheet import mel, melbook, windcharts
-from briefsheet.builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
-from briefsheet.flightplan import FlightPlan, parse_flight_plan
-from briefsheet.notams import flight_remarks
-from briefsheet.output import SIZE_LIMIT, briefing_pdf, output_names, package_pdf, size_text
-from briefsheet.render import asset, render_briefing
+
+def _use_current_code() -> None:
+    """After an update is pulled, Streamlit Cloud runs this script again but keeps the
+    briefsheet modules it imported earlier, so new code fails to import ("ImportError")
+    until the app is rebooted. Drop those modules when their files have changed."""
+    package = Path(__file__).resolve().parent / "briefsheet"
+    stamp = max((p.stat().st_mtime for p in package.glob("*.py")), default=0.0)
+    loaded = sys.modules.get("briefsheet")
+    if loaded is not None and getattr(loaded, "_source_stamp", None) != stamp:
+        for name in [n for n in sys.modules if n == "briefsheet" or n.startswith("briefsheet.")]:
+            del sys.modules[name]
+    import briefsheet
+
+    briefsheet._source_stamp = stamp
+
+
+_use_current_code()
+
+from briefsheet import mel, melbook, windcharts  # noqa: E402 - after _use_current_code
+from briefsheet.builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text  # noqa: E402
+from briefsheet.flightplan import FlightPlan, parse_flight_plan  # noqa: E402
+from briefsheet.notams import flight_remarks  # noqa: E402
+from briefsheet.output import SIZE_LIMIT, briefing_pdf, output_names, package_pdf, size_text  # noqa: E402
+from briefsheet.render import asset, render_briefing  # noqa: E402
 
 UTC_OFFSET_HOURS = -4.0  # dispatch office local time (Trinidad); dates the brief and picks the MEL sheet
 BOOKS_DIR = Path(__file__).resolve().parent / "mel_books"   # MEL books kept on this PC (not in git)
