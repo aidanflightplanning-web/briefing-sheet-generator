@@ -27,7 +27,7 @@ from . import melbook, windcharts
 from .builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from .flightplan import FlightPlan, parse_flight_plan
 from .notams import flight_remarks
-from .output import OutputError, write_outputs
+from .output import SIZE_LIMIT, OutputError, size_text, write_outputs
 from .render import asset
 from .settings import Settings
 
@@ -570,13 +570,9 @@ class App(tk.Tk):
         self.update_idletasks()
         charts = self._selected_charts()
         try:
-            attachments = []
-            if self.pages_var.get() and self.book_pages:
-                attachments.append(melbook.pages_pdf(self.book_pages))
-            if charts:
-                attachments.append(windcharts.charts_pdf(charts))
+            book_pages = self.book_pages if self.pages_var.get() else []
             written = write_outputs(self.fp_path, data, self.settings.output_dir or None,
-                                    append=self.append_var.get(), attachments=attachments)
+                                    append=self.append_var.get(), book_pages=book_pages, charts=charts)
         except OutputError as exc:
             messagebox.showerror("Briefing sheet", str(exc), parent=self)
             return
@@ -589,8 +585,12 @@ class App(tk.Tk):
         self.last_written = written
         extras = ([f"MEL book pages: {self._book_page_count()}"] if self.pages_var.get() and self.book_pages
                   else []) + ([f"Wind charts: {', '.join(f'+{c.hour:02d} h' for c in charts)}"] if charts else [])
+        size = written[0].stat().st_size
+        extras.append(f"Briefing sheet + attachments: {size_text(size)}")
+        if size >= SIZE_LIMIT:
+            extras.append(f"Over {size_text(SIZE_LIMIT)} – untick some wind charts or MEL pages to make it smaller.")
         self._set_status("Saved:\n" + "\n".join(p.name for p in written) + f"\nin {written[0].parent}" +
-                         "".join(f"\n{e}" for e in extras), OK)
+                         "".join(f"\n{e}" for e in extras), OK if size < SIZE_LIMIT else WARN)
         self.folder_button.grid(row=4, column=0, sticky="w", pady=(4, 0))
         if self.open_var.get():
             self._open(written[0])

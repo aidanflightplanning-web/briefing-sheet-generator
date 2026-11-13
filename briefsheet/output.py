@@ -1,8 +1,10 @@
 """Writes the briefing sheet PDF and the flight plan package with the sheet appended.
 
 Attachments (the MEL book pages of the open items, wind charts) follow the briefing
-sheet in both files. Every page added here is tagged, so when a package is opened
-again only the flight plan pages are kept and the sheet and attachments are replaced.
+sheet in both files. They are stored as black-and-white images so the sheet and its
+attachments together stay under 1 MB. Every page added here is tagged, so when a
+package is opened again only the flight plan pages are kept and the sheet and
+attachments are replaced.
 """
 
 from __future__ import annotations
@@ -20,6 +22,8 @@ from .render import render_briefing
 
 SUFFIXES = ("_WITH_BRIEFSHEET", "_BRIEFSHEET")
 ADDED_PAGE_KEY = "/BriefingSheetGenerator"   # marks pages this program added
+SIZE_LIMIT = 1_000_000          # bytes: the briefing sheet and its attachments together stay under 1 MB
+MEL_DPI_STEPS = (300, 200, 150)  # MEL page resolution, lowered only when needed to stay under the limit
 
 
 class OutputError(OSError):
@@ -97,8 +101,29 @@ def append_to_flight_plan(flight_plan: Path, briefsheet: Path, target: Path) -> 
     _replace(Path(tmp), target)
 
 
+def briefing_pdf(sheet: bytes, book_pages=(), charts=()) -> bytes:
+    """The briefing sheet followed by the MEL book pages (melbook.ItemPages) and the wind
+    charts (windcharts.WindChart), kept under SIZE_LIMIT: if a long list of MEL pages
+    makes it larger, those pages are printed at a lower resolution."""
+    from . import melbook, windcharts
+
+    wind = windcharts.charts_pdf(list(charts)) if charts else None
+    out = b""
+    for dpi in MEL_DPI_STEPS:
+        mel = melbook.pages_pdf(list(book_pages), dpi=dpi) if book_pages else None
+        out = combine(sheet, [mel, wind])
+        if len(out) < SIZE_LIMIT or mel is None:
+            break
+    return out
+
+
+def size_text(size: int) -> str:
+    """'640 KB'."""
+    return f"{max(1, round(size / 1000))} KB"
+
+
 def write_outputs(flight_plan: str | Path, data: BriefingData, output_dir: str | Path | None = None,
-                  append: bool = True, attachments=()) -> list[Path]:
+                  append: bool = True, book_pages=(), charts=()) -> list[Path]:
     """Render the briefing sheet with its attachments (and optionally the combined package).
     Returns the files written."""
     sheet_path, package_path = output_paths(flight_plan, output_dir)
@@ -107,7 +132,7 @@ def write_outputs(flight_plan: str | Path, data: BriefingData, output_dir: str |
     render_briefing(data, buffer)
     fd, tmp = tempfile.mkstemp(suffix=".pdf", dir=sheet_path.parent)
     with os.fdopen(fd, "wb") as fh:
-        fh.write(combine(buffer.getvalue(), attachments))
+        fh.write(briefing_pdf(buffer.getvalue(), book_pages, charts))
     _replace(Path(tmp), sheet_path)
     written = [sheet_path]
     if append:

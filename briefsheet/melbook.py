@@ -193,6 +193,8 @@ def _parse(texts: list[str]) -> tuple[list[BookPage], str]:
 
 _cache: dict[str, MelBook] = {}
 MAX_CACHED = 4
+RASTER_DPI = 300          # attached MEL pages: black-and-white images at print quality
+RASTER_THRESHOLD = 170    # grey values above this print white
 
 
 def load_book(source: str | Path | bytes, name: str | None = None) -> MelBook:
@@ -290,25 +292,52 @@ def item_pages(books: list[MelBook], lookups, fp=None) -> list[ItemPages]:
     return result
 
 
-def pages_pdf(items: list[ItemPages]) -> bytes | None:
-    """The pages of the items, in MEL sheet order, each page once. None when there are none."""
-    from pypdf import PdfReader, PdfWriter
-
-    writer = PdfWriter()
-    readers: dict[int, PdfReader] = {}
-    seen: set[tuple[int, int]] = set()
+def _unique_pages(items: list[ItemPages]) -> list[tuple[MelBook, int]]:
+    order, seen = [], set()
     for entry in items:
-        if not entry.book:
-            continue
-        reader = readers.get(id(entry.book))
-        if reader is None:
-            reader = readers[id(entry.book)] = PdfReader(io.BytesIO(entry.book.pdf_bytes()))
-        for i in entry.pages:
-            if (id(entry.book), i) not in seen and 0 <= i < len(reader.pages):
-                writer.add_page(reader.pages[i])
+        for i in entry.pages if entry.book else ():
+            if (id(entry.book), i) not in seen and 0 <= i < entry.book.page_count:
                 seen.add((id(entry.book), i))
-    if not seen:
+                order.append((entry.book, i))
+    return order
+
+
+def pages_pdf(items: list[ItemPages], dpi: int | None = RASTER_DPI) -> bytes | None:
+    """The pages of the items, in MEL sheet order, each page once. None when there are none.
+
+    By default each page is printed to a black-and-white image at `dpi` (fax compression),
+    which keeps a page at 15-45 KB; the book's own pages carry their fonts and are about
+    100 KB each. dpi=None copies the pages as they are."""
+    order = _unique_pages(items)
+    if not order:
         return None
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    return buffer.getvalue()
+    if dpi is None:
+        from pypdf import PdfReader, PdfWriter
+
+        writer = PdfWriter()
+        readers: dict[int, PdfReader] = {}
+        for book, i in order:
+            reader = readers.get(id(book)) or readers.setdefault(id(book), PdfReader(io.BytesIO(book.pdf_bytes())))
+            writer.add_page(reader.pages[i])
+        buffer = io.BytesIO()
+        writer.write(buffer)
+        return buffer.getvalue()
+
+    import pypdfium2 as pdfium
+
+    from .compact import bilevel, images_pdf
+
+    docs: dict[int, pdfium.PdfDocument] = {}
+    try:
+        images = []
+        for book, i in order:
+            doc = docs.get(id(book))
+            if doc is None:
+                source = book.source if isinstance(book.source, (bytes, bytearray)) else str(book.source)
+                doc = docs[id(book)] = pdfium.PdfDocument(source)
+            gray = doc[i].render(scale=dpi / 72, grayscale=True).to_pil()
+            images.append(bilevel(gray, RASTER_THRESHOLD))
+        return images_pdf(images, dpi)
+    finally:
+        for doc in docs.values():
+            doc.close()

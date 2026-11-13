@@ -28,6 +28,7 @@ USER_AGENT = "BriefingSheetGenerator/1.0 (+https://github.com/aidanflightplannin
 SELECTION_MARGIN = timedelta(hours=3)   # charts valid from 3 h before departure to 3 h after arrival
 PROD_TIME_RE = re.compile(rb"ProdTime=(\d{8})-(\d{4})")
 
+CHART_THRESHOLD = 200    # black and white: keeps the light grey coastlines
 LETTER = (612.0, 792.0)
 MARGIN = 18.0
 CAPTION_SPACE = 14.0
@@ -156,23 +157,28 @@ def selection_text(fp) -> str:
 
 
 def charts_pdf(charts: list[WindChart]) -> bytes:
-    """One US Letter portrait page per chart, scaled to fit, with a source line."""
+    """One US Letter portrait page per chart, scaled to fit, with a source line.
+
+    The chart is stored in black and white with fax compression (about 100 KB a page
+    instead of 530 KB in grey); these are fax charts, made to print that way."""
     from PIL import Image
-    from reportlab.lib.utils import ImageReader
+    from pypdf import PageObject, PdfReader, PdfWriter, Transformation
     from reportlab.pdfgen import canvas
 
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=LETTER, pageCompression=1)
-    pdf.setTitle(f"Wind/temperature charts {LEVEL} {AREA}")
+    from .compact import bilevel, images_pdf
+
+    writer = PdfWriter()
     width, height = LETTER
     box_w, box_h = width - 2 * MARGIN, height - 2 * MARGIN - CAPTION_SPACE
     for chart in charts:
         with Image.open(io.BytesIO(chart.image)) as im:
-            im = im.convert("L")
-            scale = min(box_w / im.width, box_h / im.height)
-            w, h = im.width * scale, im.height * scale
-            x, y = (width - w) / 2, MARGIN + CAPTION_SPACE + (box_h - h) / 2
-            pdf.drawImage(ImageReader(im), x, y, w, h)
+            bw = bilevel(im, CHART_THRESHOLD)
+        scale = min(box_w / bw.width, box_h / bw.height)
+        w, h = bw.width * scale, bw.height * scale
+        x, y = (width - w) / 2, MARGIN + CAPTION_SPACE + (box_h - h) / 2
+
+        frame = io.BytesIO()   # border and source line, drawn over the chart
+        pdf = canvas.Canvas(frame, pagesize=LETTER, pageCompression=1)
         pdf.setLineWidth(0.5)
         pdf.rect(x, y, w, h)
         pdf.setFont("Helvetica", 7)
@@ -180,7 +186,15 @@ def charts_pdf(charts: list[WindChart]) -> bytes:
         pdf.drawString(MARGIN, MARGIN + 3, f"WAFC {LEVEL} wind/temp · Area A (Americas) · {chart.label}")
         pdf.drawRightString(width - MARGIN, MARGIN + 3,
                             f"aviationweather.gov · retrieved {chart.retrieved:%d%b%y %H%MZ}".upper())
-        pdf.setFillGray(0)
         pdf.showPage()
-    pdf.save()
+        pdf.save()
+
+        page = PageObject.create_blank_page(width=width, height=height)
+        image_page = PdfReader(io.BytesIO(images_pdf([bw], 72))).pages[0]   # 1 px = 1 pt
+        page.merge_transformed_page(image_page, Transformation().scale(scale, scale).translate(x, y))
+        page.merge_page(PdfReader(frame).pages[0])
+        writer.add_page(page)
+    writer.add_metadata({"/Title": f"Wind/temperature charts {LEVEL} {AREA}"})
+    buffer = io.BytesIO()
+    writer.write(buffer)
     return buffer.getvalue()

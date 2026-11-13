@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from reportlab import rl_config
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -27,6 +28,7 @@ from reportlab.pdfgen import canvas
 
 from .builder import NIL_MEL, BriefingData
 
+rl_config.useA85 = 0   # store images in binary, not as ASCII85 text (a quarter smaller)
 PAGE_W, PAGE_H = letter
 
 # Table geometry (x positions and border thickness)
@@ -250,7 +252,7 @@ CHECKBOXES = [  # name, box x, text x, row
 class _Sheet:
     def __init__(self, out: str | Path | BinaryIO, data: BriefingData, fonts: Fonts):
         self.fonts = fonts
-        self.c = canvas.Canvas(out if hasattr(out, "write") else str(out), pagesize=letter)
+        self.c = canvas.Canvas(out if hasattr(out, "write") else str(out), pagesize=letter, pageCompression=1)
         self.c.setTitle("Flight Crew Briefing Sheet")
         self.c.setSubject(f"BW {data.flight_no} {data.date}".strip())
         self.c.setAuthor(data.dispatcher or "Caribbean Airlines Flight Dispatch")

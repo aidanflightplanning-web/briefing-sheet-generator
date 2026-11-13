@@ -162,6 +162,17 @@ attached as a US Letter page, scaled to fit, with a source line. While the AWC i
 publishing a new run the charts can come from two runs; a note says so and **Refresh**
 gets the full set later.
 
+### File size
+
+The briefing sheet and its attachments together stay **under 1 MB**. The attachments
+are stored as black-and-white images with fax (CCITT G4) compression: a wind chart page
+is about 100 KB (530 KB in grey) and an MEL book page 15-45 KB at 300 dpi (about 100 KB
+as copied from the book, which repeats its fonts on every page). The sheet itself is
+about 140 KB. A typical sheet with a few MEL pages and two charts is 300-400 KB; even 16
+MEL pages and all six charts fit. If a long list of MEL pages would go over 1 MB, those
+pages are printed at 200 or 150 dpi instead; if it is still over, the size is shown with
+a warning so a chart can be unticked. The size is shown after generating.
+
 ### NOTAM screening
 
 The NOTAM pages of the brief are checked for the **departure, destination, alternate and
@@ -229,6 +240,7 @@ the repository by `.gitignore`, together with all PDF and Excel files.
 | `briefsheet/mel.py` | Reads the MEL workbooks |
 | `briefsheet/melbook.py` | Finds the pages of an MEL item in the MEL book |
 | `briefsheet/windcharts.py` | Downloads the wind charts, makes the Letter pages |
+| `briefsheet/compact.py` | Black-and-white, fax-compressed pages for the attachments |
 | `briefsheet/notams.py` | Reads the NOTAM pages and picks the closures and outages |
 | `briefsheet/builder.py` | Fills in the fields |
 | `briefsheet/render.py` | Draws the SOC001 form |

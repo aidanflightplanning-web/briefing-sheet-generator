@@ -523,6 +523,12 @@ class Rendering(unittest.TestCase):
             render._fonts, render._font_dirs, render._font_trees = saved
 
 
+def filters(image) -> list[str]:
+    """An image's /Filter as a list (a single name or an array in the PDF)."""
+    value = image["/Filter"]
+    return [str(v) for v in value] if isinstance(value, list) else [str(value)]
+
+
 def book_page(label: str, *lines: str) -> list:
     """An MEL book page: the running header, then the body lines."""
     return ["Caribbean Airlines", "B737-8 MINIMUM EQUIPMENT LIST (MEL)", f"Page {label}", *lines]
@@ -585,6 +591,19 @@ class SyntheticMelBook(unittest.TestCase):
         self.assertEqual(melbook.fleet_of_type("AT76", "ATR72"), "ATR")
         self.assertEqual(melbook.fleet_of_type("B38M", "B737"), "B737")
 
+    def test_attached_pages_are_compact_black_and_white_images(self):
+        from pypdf import PdfReader
+
+        entries = [melbook.ItemPages("ABC", "21-51-01", self.book, self.book.find("21-51-01"))]
+        pages = PdfReader(io.BytesIO(melbook.pages_pdf(entries))).pages
+        self.assertEqual([(round(float(p.mediabox.width)), round(float(p.mediabox.height))) for p in pages],
+                         [(612, 792)] * 4)                                   # same page size as the book
+        image = next(iter(pages[0]["/Resources"]["/XObject"].values())).get_object()
+        self.assertEqual((filters(image), image["/BitsPerComponent"], image["/Width"]),
+                         (["/CCITTFaxDecode"], 1, 2550))                      # 300 dpi, fax compression
+        vector = melbook.pages_pdf(entries, dpi=None)                         # the book's pages as they are
+        self.assertIn("21-51-01-01A", extract_pages(vector)[2])
+
 
 class WindCharts(unittest.TestCase):
     @staticmethod
@@ -642,6 +661,28 @@ class WindCharts(unittest.TestCase):
         self.assertEqual([(float(p.mediabox.width), float(p.mediabox.height)) for p in pages],
                          [(612.0, 792.0)] * 2)
         self.assertIn("VALID 0600Z THU 12 NOV", extract_pages(pdf)[1])
+        image = next(iter(pages[0]["/Resources"]["/XObject"].values())).get_object()
+        self.assertEqual((filters(image), image["/BitsPerComponent"]), (["/CCITTFaxDecode"], 1))
+
+    def test_sheet_and_attachments_stay_under_the_size_limit(self):
+        from briefsheet import output
+
+        sheet = io.BytesIO()
+        render.render_briefing(template_data(), sheet)
+        book = melbook.load_book(make_pdf(MEL_BOOK, header=False), name="B737 MEL.pdf")
+        entries = [melbook.ItemPages("ABC", "21-51-01", book, book.find("21-51-01"))]
+        charts = [self.chart(h) for h in windcharts.HOURS]
+        full = output.briefing_pdf(sheet.getvalue(), entries, charts)
+        self.assertLess(len(full), output.SIZE_LIMIT)
+        self.assertEqual(len(extract_pages(full)), 1 + 4 + 6)
+        saved = output.SIZE_LIMIT
+        try:
+            output.SIZE_LIMIT = len(full)       # too big now: the MEL pages drop to a lower resolution
+            smaller = output.briefing_pdf(sheet.getvalue(), entries, charts)
+        finally:
+            output.SIZE_LIMIT = saved
+        self.assertLess(len(smaller), len(full))
+        self.assertEqual(len(extract_pages(smaller)), 11)
 
 
 if __name__ == "__main__":

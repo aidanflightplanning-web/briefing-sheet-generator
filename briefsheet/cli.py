@@ -16,7 +16,7 @@ from . import mel, melbook, windcharts
 from .builder import build_briefing, briefing_date
 from .flightplan import FlightPlanError, parse_flight_plan
 from .notams import flight_remarks
-from .output import OutputError, write_outputs
+from .output import SIZE_LIMIT, OutputError, size_text, write_outputs
 from .settings import Settings
 
 
@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         note = "" if lk.exact_date else f"  (no sheet for {day:%d/%m/%y}; latest sheet used)"
         items = "; ".join(i.briefing_text for i in lk.items) or "NIL REPORTED"
         print(f"MEL 9Y-{lk.registration}: {items}\n  from {lk.source}{note}")
-    attachments = []
+    book_pages, charts_chosen = [], []
     if lookups and not args.no_mel_pages and any(lk.items for lk in lookups):
         books = []
         for path in book_paths:
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
             entries = melbook.item_pages(books, lookups, fp)
             for entry in entries:
                 print(f"  MEL book 9Y-{entry.registration} {entry.note}")
-            attachments.append(melbook.pages_pdf(entries))
+            book_pages = entries
     b737 = any(melbook.fleet_of_type(leg.aircraft_type, leg.equipment) == "B737" for leg in fp.legs)
     if wind_hours and not b737:
         print("Wind charts : not attached - wind charts are for B737 flights only")
@@ -138,8 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         chosen = [c for c in charts if c.hour in hours]
         print("Wind charts : " + (", ".join(c.label for c in chosen) or
                                   "none valid from 3 h before departure to 3 h after arrival"))
-        if chosen:
-            attachments.append(windcharts.charts_pdf(chosen))
+        charts_chosen = chosen
 
     remarks = flight_remarks(fp)
     print(f"NOTAMs: {len(remarks)} closure/outage item(s) added to the remarks")
@@ -161,10 +160,13 @@ def main(argv: list[str] | None = None) -> int:
                           utc_offset_hours=settings.utc_offset_hours, dispatcher=settings.dispatcher, **kwargs)
     try:
         written = write_outputs(args.flight_plan, data, args.out or settings.output_dir or None,
-                                append=not args.no_append, attachments=attachments)
+                                append=not args.no_append, book_pages=book_pages, charts=charts_chosen)
     except OutputError as exc:
         print(exc, file=sys.stderr)
         return 1
     for path in written:
         print(f"Saved: {path}")
+    size = written[0].stat().st_size
+    print(f"Briefing sheet + attachments: {size_text(size)}"
+          + (f" - over {size_text(SIZE_LIMIT)}, attach fewer wind charts or MEL pages" if size >= SIZE_LIMIT else ""))
     return 0

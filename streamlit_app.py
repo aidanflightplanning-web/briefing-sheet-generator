@@ -29,7 +29,7 @@ from briefsheet import mel, melbook, windcharts
 from briefsheet.builder import CHECKLIST_ITEMS, BriefingData, briefing_date, build_briefing, mel_text
 from briefsheet.flightplan import FlightPlan, parse_flight_plan
 from briefsheet.notams import flight_remarks
-from briefsheet.output import combine, output_names, package_pdf
+from briefsheet.output import SIZE_LIMIT, briefing_pdf, output_names, package_pdf, size_text
 from briefsheet.render import asset, render_briefing
 
 UTC_OFFSET_HOURS = -4.0  # dispatch office local time (Trinidad); dates the brief and picks the MEL sheet
@@ -437,9 +437,7 @@ if st.button("Generate briefing sheet", type="primary", disabled=not books, widt
     with st.spinner("Generating…"):
         buffer = io.BytesIO()
         render_briefing(data, buffer)
-        attachments = [melbook.pages_pdf(book_pages) if book_pages else None,
-                       windcharts.charts_pdf(selected_charts) if selected_charts else None]
-        sheet = combine(buffer.getvalue(), attachments)
+        sheet = briefing_pdf(buffer.getvalue(), book_pages, selected_charts)
         added = ([f"{len(set(book_page_keys))} MEL book page{'s' if len(set(book_page_keys)) != 1 else ''}"]
                  if book_page_keys else []) + \
                 ([f"{len(selected_charts)} wind chart{'s' if len(selected_charts) != 1 else ''}"]
@@ -455,9 +453,12 @@ if output and output["signature"] == signature:
                           type="primary", icon=":material/download:", width="stretch", on_click="ignore")
     second.download_button("Download flight plan + briefing sheet", output["package"], file_name=package_name,
                            mime="application/pdf", icon=":material/download:", width="stretch", on_click="ignore")
-    if output.get("added"):
-        st.caption("Attached after the briefing sheet: " + " and ".join(output["added"]) +
-                   " (in both downloads and in the preview below).")
+    size = len(output["sheet"])
+    attached = (" + " + " and ".join(output["added"]) + " attached after it (in both downloads and the preview below)"
+                if output.get("added") else "")
+    (st.caption if size < SIZE_LIMIT else st.warning)(
+        f"Briefing sheet{attached}: **{size_text(size)}**"
+        + ("" if size < SIZE_LIMIT else f" – over {size_text(SIZE_LIMIT)}; untick some wind charts to make it smaller."))
     _, middle, _ = st.columns([1, 4, 1])
     for page in output["previews"]:
         middle.image(page, width="stretch")
